@@ -13,9 +13,6 @@
         android:id="@+id/menu_history_item"
         android:title="@string/mitHistory" />
     <item
-        android:id="@+id/menu_config_item"
-        android:title="@string/mitConfig" />
-    <item
         android:id="@+id/menu_help_item"
         android:title="@string/mitHelp" />
 </menu>

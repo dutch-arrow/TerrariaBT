@@ -5,19 +5,19 @@ plugins {
 android {
     signingConfigs {
         release {
-            storeFile file('/home/dutch/DAS-Terrarium')
+            storeFile file('/home/tom/Workspaces/AndroidStudio/keystore')
             storePassword 'Thomas1953!'
             keyPassword 'Thomas1953!'
-            keyAlias 'das-terrarium-apk'
+            keyAlias 'key0'
         }
     }
-    compileSdkVersion 30
+    compileSdkVersion 32
     buildToolsVersion "30.0.3"
 
     defaultConfig {
-        applicationId "nl.das.terraria2"
+        applicationId "nl.das.terrariaBT"
         minSdkVersion 26
-        targetSdkVersion 30
+        targetSdkVersion 32
         versionCode 1
         versionName "1.0"
 

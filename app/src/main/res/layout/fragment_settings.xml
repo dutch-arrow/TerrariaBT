@@ -125,6 +125,7 @@
             app:layout_constraintTop_toBottomOf="@+id/edtTerrarium4" />
 
         <EditText
+            android:id="@+id/edtTerrarium5"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:ems="10"

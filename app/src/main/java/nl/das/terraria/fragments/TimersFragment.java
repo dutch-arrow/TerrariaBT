@@ -3,7 +3,6 @@ package nl.das.terraria.fragments;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.os.Bundle;
-import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -30,28 +29,23 @@ public class TimersFragment extends Fragment {
     }
 
     public static TimersFragment newInstance(int tabnr) {
-        Log.i("Terraria", "TimersFragment.newInstance() start");
         TimersFragment fragment = new TimersFragment();
         Bundle args = new Bundle();
         args.putInt("tabnr", tabnr);
         fragment.setArguments(args);
-        Log.i("Terraria", "TimersFragment.newInstance() end");
         return fragment;
     }
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        Log.i("Terraria", "TimersFragment.onCreate() start");
         super.onCreate(savedInstanceState);
         if (getArguments() != null) {
             tabnr = getArguments().getInt("tabnr");
         }
-        Log.i("Terraria", "TimersFragment.onCreate() end");
     }
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
-        Log.i("Terraria", "TimersFragment.onCreateView() start");
         int backcolorSel = getResources().getColor(R.color.colorPrimaryDark, null);
         int backcolor = getResources().getColor(R.color.notActive, null);
         View view = inflater.inflate(R.layout.fragment_timers, container, false);
@@ -60,7 +54,7 @@ public class TimersFragment extends Fragment {
             View v = inflater.inflate(R.layout.dynamic_button, container, false);
             Button b = v.findViewById(R.id.dyn_button_id);
             String devname = d.getDevice();
-            int r = getResources().getIdentifier(devname, "string", "nl.das.terraria2");
+            int r = getResources().getIdentifier(devname, "string", "nl.das.terrariaBT");
             b.setText(getResources().getString(r));
             b.setOnClickListener(bv -> {
                 Button btn = (Button) bv;
@@ -77,7 +71,6 @@ public class TimersFragment extends Fragment {
             });
             deviceLayout.addView(v);
         }
-        Log.i("Terraria", "TimersFragment.onCreateView() end");
         return view;
     }
 

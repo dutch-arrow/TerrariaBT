@@ -20,11 +20,17 @@ public class Properties {
     private List<Device> devices = null;
 
     private transient String tcuName;
+    private transient String deviceName;
+    private transient String uuid;
     private transient String mockPostfix;
 
     public String getTcu() { return tcu; }
 
     public void setTcu(String tcu) { this.tcu = tcu;}
+
+    public String getUuid() { return uuid; }
+
+    public void setUuid(String uuid) { this.uuid = uuid; }
 
     public Integer getNrOfTimers() {
         return nrOfTimers;
@@ -58,4 +64,7 @@ public class Properties {
 
     public void setMockPostfix(String mockPostfix) { this.mockPostfix = mockPostfix; }
 
+    public String getDeviceName() { return deviceName; }
+
+    public void setDeviceName(String deviceName) { this.deviceName = deviceName; }
 }

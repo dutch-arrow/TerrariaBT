@@ -21,6 +21,6 @@ public class ExampleInstrumentedTest {
     public void useAppContext() {
         // Context of the app under test.
         Context appContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        assertEquals("nl.das.terraria2", appContext.getPackageName());
+        assertEquals("nl.das.terrariaBT", appContext.getPackageName());
     }
 }

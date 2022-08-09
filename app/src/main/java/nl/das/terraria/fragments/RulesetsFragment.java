@@ -98,14 +98,14 @@ public class RulesetsFragment extends Fragment {
         super.onViewCreated(view, savedInstanceState);
         int nrrs = TerrariaApp.configs[tabnr - 1].getNrOfPrograms();
         int vix = 0;
-        int r = getResources().getIdentifier("mitRuleset", "string", "nl.das.terraria2");
+        int r = getResources().getIdentifier("mitRuleset", "string", "nl.das.terrariaBT");
         for (int rs = 0; rs < nrrs; rs++) {
             Button btn = (Button) rulesetsLayout.getChildAt(vix);
             btn.setText(getResources().getString(r) + (rs + 1));
             vix++;
         }
         if (hasSprayer()) {
-            r = getResources().getIdentifier("lblSprayingRules", "string", "nl.das.terraria2");
+            r = getResources().getIdentifier("lblSprayingRules", "string", "nl.das.terrariaBT");
             Button btn = (Button) rulesetsLayout.getChildAt(vix);
             btn.setText(getResources().getString(r));
         }

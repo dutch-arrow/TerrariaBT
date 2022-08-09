@@ -1,15 +1,12 @@
 package nl.das.terraria.fragments;
 
-import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.os.Bundle;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
-import androidx.preference.PreferenceManager;
 
-import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -18,10 +15,6 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.Spinner;
 
-import com.android.volley.Request;
-import com.android.volley.Response;
-import com.android.volley.toolbox.JsonArrayRequest;
-import com.android.volley.toolbox.StringRequest;
 import com.github.mikephil.charting.charts.LineChart;
 import com.github.mikephil.charting.components.AxisBase;
 import com.github.mikephil.charting.components.XAxis;
@@ -31,18 +24,9 @@ import com.github.mikephil.charting.data.LineData;
 import com.github.mikephil.charting.data.LineDataSet;
 import com.github.mikephil.charting.formatter.ValueFormatter;
 import com.github.mikephil.charting.interfaces.datasets.ILineDataSet;
-import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
-import com.google.gson.reflect.TypeToken;
 
-import org.json.JSONArray;
-
-import java.io.PrintWriter;
-import java.io.StringWriter;
-import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -50,8 +34,6 @@ import java.util.Map;
 import java.util.Objects;
 
 import nl.das.terraria.R;
-import nl.das.terraria.RequestQueueSingleton;
-import nl.das.terraria.dialogs.NotificationDialog;
 import nl.das.terraria.dialogs.WaitSpinner;
 
 /**
@@ -114,7 +96,6 @@ public class HistoryFragment extends Fragment {
 
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
-        Log.i("Terraria", "HistoryFragment.onViewCreated() start");
         super.onViewCreated(view, savedInstanceState);
 
         curIPAddress = requireContext().getSharedPreferences("TerrariaApp", 0).getString("terrarium" + curTabNr + "_ip_address", "");
@@ -143,7 +124,6 @@ public class HistoryFragment extends Fragment {
         list.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                Log.i("Terraria","Selected history file '" + fileList.get(position) + "'");
                 if (position > 0) {
                     wait = new WaitSpinner(requireContext());
                     wait.start();
@@ -161,116 +141,104 @@ public class HistoryFragment extends Fragment {
         });
         Button btnView = view.findViewById(R.id.his_OkButton);
         btnView.setOnClickListener(v -> {
-            Log.i("Terraria", "stop viewing history");
             getParentFragmentManager()
                     .beginTransaction()
                     .replace(R.id.layout, StateFragment.newInstance(curTabNr))
                     .commit();
         });
-        Log.i("Terraria","Chart height/width: " + chartHeight + "/" + chartWidth);
         // get the list of history files
         getHistoryFiles();
-        Log.i("Terraria", "HistoryFragment.onViewCreated() end");
     }
 
     private void getHistoryFiles() {
-        wait = new WaitSpinner(requireContext());
-        wait.start();
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
-        String url = "http://" + curIPAddress + "/history/state";
-        Log.i("Terraria", "Execute GET request " + url);
-        // Request list of history files.
-        JsonArrayRequest jsonArrayRequest = new JsonArrayRequest(Request.Method.GET, url, null,
-                response -> {
-                    try {
-                        Log.i("Terraria", "Retrieved list of history files");
-                        Gson gson = new Gson();
-                        String[] hislst = gson.fromJson(response.toString(), new TypeToken<String[]>() {}.getType());
-//                        for (int i = 0; i < 30; i++) {
-//                            fileList.add(String.format("202207%02d", i + 1));
+//        wait = new WaitSpinner(requireContext());
+//        wait.start();
+//        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
+//        String url = "http://" + curIPAddress + "/history/state";
+//        // Request list of history files.
+//        JsonArrayRequest jsonArrayRequest = new JsonArrayRequest(Request.Method.GET, url, null,
+//                response -> {
+//                    try {
+//                        Gson gson = new Gson();
+//                        String[] hislst = gson.fromJson(response.toString(), new TypeToken<String[]>() {}.getType());
+////                        for (int i = 0; i < 30; i++) {
+////                            fileList.add(String.format("202207%02d", i + 1));
+////                        }
+//                        for (String f : hislst) {
+//                            fileList.add(f.replaceAll("state_", ""));
 //                        }
-                        for (String f : hislst) {
-                            fileList.add(f.replaceAll("state_", ""));
-                        }
-                        fileList.sort(Collections.reverseOrder());
-                        Log.i("Terraria", "Retrieved " + hislst.length + " history files");
-                    } catch (JsonSyntaxException e) {
-                        new NotificationDialog(requireContext(), "Error", "History files response contains errors:\n" + e.getMessage()).show();
-                    }
-                    wait.dismiss();
-                },
-                error -> {
-                    if (error.getMessage() == null) {
-                        StringWriter sw = new StringWriter();
-                        PrintWriter pw = new PrintWriter(sw);
-                        error.printStackTrace(pw);
-                        Log.i("Terraria", "Retrieved history error:\n" + sw);
-                    } else {
-                        Log.i("Terraria", "Error " + error.getMessage());
-                        new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
-                    }
-                    wait.dismiss();
-                }
-        );
-        // Add the request to the RequestQueue.
-        RequestQueueSingleton.getInstance(requireContext()).add(jsonArrayRequest);
+//                        fileList.sort(Collections.reverseOrder());
+//                    } catch (JsonSyntaxException e) {
+//                        new NotificationDialog(requireContext(), "Error", "History files response contains errors:\n" + e.getMessage()).show();
+//                    }
+//                    wait.dismiss();
+//                },
+//                error -> {
+//                    if (error.getMessage() == null) {
+//                        StringWriter sw = new StringWriter();
+//                        PrintWriter pw = new PrintWriter(sw);
+//                        error.printStackTrace(pw);
+//                    } else {
+//                        new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
+//                    }
+//                    wait.dismiss();
+//                }
+//        );
+//        // Add the request to the RequestQueue.
+//        RequestQueueSingleton.getInstance(requireContext()).add(jsonArrayRequest);
     }
 
     private void readHistoryState(String day) {
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
-        String url = "http://" + curIPAddress + "/history/state/state_" + day;
-        Log.i("Terraria", "Execute GET request " + url);
-        // Request state history.
-        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
-                (Response.Listener<String>) response -> {
-                    try {
-                        Log.i("Terraria", "Retrieved state history");
-                        xend = 0;
-                        /*  0123456789012345678
-                            2021-08-01 05:00:00 start
-                            2021-08-01 06:00:00 mist 1 -1
-                            2021-08-01 06:00:00 fan_in 0
-                            2021-08-01 06:00:00 fan_out 0
-                        */
-                        String[] lines = response.split("\n");
-                        for (String line : lines) {
-                            String[] parts = line.split(" ");
-                            if (parts[2].equalsIgnoreCase("start")) {
-                                xstart = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
-                                String[] tm = parts[1].split(":");
-                                hmstart = Integer.parseInt(tm[0]) * 3600 + Integer.parseInt(tm[1]) * 60 + Integer.parseInt(tm[2]);
-                            } else if (parts[2].equalsIgnoreCase("stop")) {
-                                xend = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
-                            } else {
-                                int tm = (int)((Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000) - xstart);
-                                String dev = parts[2];
-                                boolean on = parts[3].equalsIgnoreCase("1");
-                                history_state.computeIfAbsent(dev, k -> new HashMap<>());
-                                Objects.requireNonNull(history_state.get(dev)).put(tm, on);
-                            }
-                            if (xend == 0) {
-                                xend = xstart + 24 * 60 * 60;
-                            }
-                        }
-                        drawChart();
-                    } catch (JsonSyntaxException | ParseException e) {
-                        new NotificationDialog(requireContext(), "Error", "History state response contains errors:\n" + e.getMessage()).show();
-                    }
-                },
-                (Response.ErrorListener) error -> {
-                    if (error.getMessage() == null) {
-                        StringWriter sw = new StringWriter();
-                        PrintWriter pw = new PrintWriter(sw);
-                        error.printStackTrace(pw);
-                        Log.i("Terraria", "Retrieved state history error:\n" + sw);
-                    } else {
-                        Log.i("Terraria", "Error " + error.getMessage());
-                        new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
-                    }
-                }
-        );
-        // Add the request to the RequestQueue.
-        RequestQueueSingleton.getInstance(requireContext()).add(stringRequest);
+//        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
+//        String url = "http://" + curIPAddress + "/history/state/state_" + day;
+//        // Request state history.
+//        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
+//                (Response.Listener<String>) response -> {
+//                    try {
+//                        xend = 0;
+//                        /*  0123456789012345678
+//                            2021-08-01 05:00:00 start
+//                            2021-08-01 06:00:00 mist 1 -1
+//                            2021-08-01 06:00:00 fan_in 0
+//                            2021-08-01 06:00:00 fan_out 0
+//                        */
+//                        String[] lines = response.split("\n");
+//                        for (String line : lines) {
+//                            String[] parts = line.split(" ");
+//                            if (parts[2].equalsIgnoreCase("start")) {
+//                                xstart = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
+//                                String[] tm = parts[1].split(":");
+//                                hmstart = Integer.parseInt(tm[0]) * 3600 + Integer.parseInt(tm[1]) * 60 + Integer.parseInt(tm[2]);
+//                            } else if (parts[2].equalsIgnoreCase("stop")) {
+//                                xend = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
+//                            } else {
+//                                int tm = (int)((Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000) - xstart);
+//                                String dev = parts[2];
+//                                boolean on = parts[3].equalsIgnoreCase("1");
+//                                history_state.computeIfAbsent(dev, k -> new HashMap<>());
+//                                Objects.requireNonNull(history_state.get(dev)).put(tm, on);
+//                            }
+//                            if (xend == 0) {
+//                                xend = xstart + 24 * 60 * 60;
+//                            }
+//                        }
+//                        drawChart();
+//                    } catch (JsonSyntaxException | ParseException e) {
+//                        new NotificationDialog(requireContext(), "Error", "History state response contains errors:\n" + e.getMessage()).show();
+//                    }
+//                },
+//                (Response.ErrorListener) error -> {
+//                    if (error.getMessage() == null) {
+//                        StringWriter sw = new StringWriter();
+//                        PrintWriter pw = new PrintWriter(sw);
+//                        error.printStackTrace(pw);
+//                    } else {
+//                        new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
+//                    }
+//                }
+//        );
+//        // Add the request to the RequestQueue.
+//        RequestQueueSingleton.getInstance(requireContext()).add(stringRequest);
     }
 
     private void drawChart() {
@@ -333,60 +301,56 @@ public class HistoryFragment extends Fragment {
     }
 
     private void readHistoryTemperture(String day) {
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
-        String url = "http://" + curIPAddress + "/history/temperature/temp_" + day;
-        Log.i("Terraria", "Execute GET request " + url);
-        // Request state history.
-        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
-                (Response.Listener<String>) response -> {
-                    try {
-                        Log.i("Terraria", "Retrieved temperature history");
-                        xend = 0;
-                        /*
-                            2021-08-01 05:00:00 r=21 t=21
-                            2021-08-01 06:00:00 r=21 t=21
-                            2021-08-01 06:45:00 r=21 t=21
-                         */
-                        String[] lines = response.split("\n");
-                        for (String line : lines) {
-                            String[] parts = line.split(" ");
-                            if (parts[2].equalsIgnoreCase("start")) {
-                                xstart = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
-                                String[] tm = parts[1].split(":");
-                                hmstart = Integer.parseInt(tm[0]) * 3600 + Integer.parseInt(tm[1]) * 60 + Integer.parseInt(tm[2]);
-                            } else if (parts[2].equalsIgnoreCase("stop")) {
-                                xend = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
-                            } else {
-                                int tm = (int)((Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000) - xstart);
-                                String room = parts[2].split("=")[1];
-                                int terr = Integer.parseInt(parts[3].split("=")[1]);
-                                history_temp.put(tm, terr);
-                            }
-                            if (xend == 0) {
-                                xend = xstart + 24 * 60 * 60;
-                            }
-                        }
-                        drawTerrTempLine(0xFFF43F1A);
-                        wait.dismiss();
-                    } catch (JsonSyntaxException | ParseException e) {
-                        new NotificationDialog(requireContext(), "Error", "History response contains errors:\n" + e.getMessage()).show();
-                    }
-                },
-                (Response.ErrorListener) error -> {
-                    if (error.getMessage() == null) {
-                        StringWriter sw = new StringWriter();
-                        PrintWriter pw = new PrintWriter(sw);
-                        error.printStackTrace(pw);
-                        Log.i("Terraria", "Retrieved temperature history error:\n" + sw);
-                    } else {
-                        Log.i("Terraria", "Error " + error.getMessage());
-                        new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
-                    }
-                    wait.dismiss();
-                }
-        );
-        // Add the request to the RequestQueue.
-        RequestQueueSingleton.getInstance(requireContext()).add(stringRequest);
+//        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
+//        String url = "http://" + curIPAddress + "/history/temperature/temp_" + day;
+//        // Request state history.
+//        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
+//                (Response.Listener<String>) response -> {
+//                    try {
+//                        xend = 0;
+//                        /*
+//                            2021-08-01 05:00:00 r=21 t=21
+//                            2021-08-01 06:00:00 r=21 t=21
+//                            2021-08-01 06:45:00 r=21 t=21
+//                         */
+//                        String[] lines = response.split("\n");
+//                        for (String line : lines) {
+//                            String[] parts = line.split(" ");
+//                            if (parts[2].equalsIgnoreCase("start")) {
+//                                xstart = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
+//                                String[] tm = parts[1].split(":");
+//                                hmstart = Integer.parseInt(tm[0]) * 3600 + Integer.parseInt(tm[1]) * 60 + Integer.parseInt(tm[2]);
+//                            } else if (parts[2].equalsIgnoreCase("stop")) {
+//                                xend = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
+//                            } else {
+//                                int tm = (int)((Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000) - xstart);
+//                                String room = parts[2].split("=")[1];
+//                                int terr = Integer.parseInt(parts[3].split("=")[1]);
+//                                history_temp.put(tm, terr);
+//                            }
+//                            if (xend == 0) {
+//                                xend = xstart + 24 * 60 * 60;
+//                            }
+//                        }
+//                        drawTerrTempLine(0xFFF43F1A);
+//                        wait.dismiss();
+//                    } catch (JsonSyntaxException | ParseException e) {
+//                        new NotificationDialog(requireContext(), "Error", "History response contains errors:\n" + e.getMessage()).show();
+//                    }
+//                },
+//                (Response.ErrorListener) error -> {
+//                    if (error.getMessage() == null) {
+//                        StringWriter sw = new StringWriter();
+//                        PrintWriter pw = new PrintWriter(sw);
+//                        error.printStackTrace(pw);
+//                    } else {
+//                        new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
+//                    }
+//                    wait.dismiss();
+//                }
+//        );
+//        // Add the request to the RequestQueue.
+//        RequestQueueSingleton.getInstance(requireContext()).add(stringRequest);
     }
 
     public void drawTerrTempLine(int color) {

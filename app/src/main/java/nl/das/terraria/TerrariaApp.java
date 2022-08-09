@@ -2,17 +2,32 @@ package nl.das.terraria;
 
 import static nl.das.terraria.R.*;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
+import androidx.fragment.app.Fragment;
 
-import android.content.Context;
+import android.Manifest;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothSocket;
+import android.content.ActivityNotFoundException;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
-import android.content.res.Resources;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Message;
+import android.os.Messenger;
+import android.os.RemoteException;
 import android.util.Log;
-import android.util.TypedValue;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
@@ -24,18 +39,16 @@ import com.google.gson.Gson;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
-import nl.das.terraria.dialogs.NotificationDialog;
 import nl.das.terraria.dialogs.WaitSpinner;
 import nl.das.terraria.fragments.HelpFragment;
 import nl.das.terraria.fragments.HistoryFragment;
 import nl.das.terraria.fragments.RulesetsFragment;
-import nl.das.terraria.fragments.SettingsFragment;
 import nl.das.terraria.fragments.StateFragment;
 import nl.das.terraria.fragments.TimersFragment;
 import nl.das.terraria.json.Properties;
@@ -48,36 +61,122 @@ public class TerrariaApp extends AppCompatActivity {
     public static Properties[] configs;
     public static SharedPreferences sp;
     public static int curTabNr;
-    public static String curIPAddress;
-    public boolean[] connected;
+    private static String curUuid;
+    private static boolean btEnabled;
+    private boolean connected = false;
+    public TerrariaApp instance;
+    private ArrayList<Integer> supportedMessages = new ArrayList<>();
+    private Messenger svc;
 
+    public static View appView;
+
+    /** Flag indicating whether we have called bind on the BTService. */
+    private boolean bound;
+    private BluetoothDevice connectedDevice;
+    private BluetoothSocket skt;
     private View mTabbar;
     private TextView[] mTabTitles;
     private Button btnContinue;
     private WaitSpinner wait;
-    private NotificationDialog ndlg;
-    private Menu menu;
+    public Menu menu;
+    /**
+     * Service connection that connects to the BTService.
+     */
+    private ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            // This is called when the connection with the service has been
+            // established, giving us the object we can use to
+            // interact with the service.  We are communicating with the
+            // service using a Messenger, so here we get a client-side
+            // representation of that from the raw IBinder object.
+            svc = new Messenger(service);
+            bound = true;
+            // We want to monitor the service for as long as we are
+            // connected to it.
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_REGISTER_CLIENT);
+                Bundle bdl = new Bundle();
+                bdl.putIntegerArrayList("commands", supportedMessages);
+                msg.setData(bdl);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+                getProperties(curTabNr);
+            } catch (RemoteException e) {
+                // In this case the service has crashed before we could even
+                // do anything with it; we can count on soon being
+                // disconnected (and then reconnected if it can be restarted)
+                // so there is no need to do anything here.
+            }
+        }
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            // This is called when the connection with the service has been
+            // unexpectedly disconnected -- that is, its process crashed.
+            svc = null;
+            bound = false;
+        }
+    };
+
+    /**
+     * Target we publish for clients to send messages to IncomingHandler.
+     */
+    final Messenger mMessenger = new Messenger(new IncomingHandler());
+
+    /**
+     * Handler of incoming messages from service.
+     */
+    class IncomingHandler extends Handler {
+        @Override
+        public void handleMessage(Message msg) {
+            super.handleMessage(msg);
+            Log.i("TerrariaBT","TerrariaApp: handleMessage() for message " + msg.what );
+            switch (msg.what) {
+                case BTService.CMD_GET_PROPERTIES:
+                    Log.i("TerrariaBT", "TerrariaApp: " + msg.obj.toString());
+                    Properties tmp = new Gson().fromJson(msg.obj.toString(), Properties.class);
+                    configs[curTabNr - 1].setDevices(tmp.getDevices());
+                    configs[curTabNr - 1].setTcu(tmp.getTcu());
+                    configs[curTabNr - 1].setNrOfTimers(tmp.getNrOfTimers());
+                    configs[curTabNr - 1].setNrOfPrograms(tmp.getNrOfPrograms());
+                    mTabbar.setVisibility(View.VISIBLE);
+                    menu.findItem(id.menu_history_item).setVisible(configs[curTabNr - 1].getTcu().endsWith("PI"));
+                    for (int i = 0; i < nrOfTerraria; i++) {
+                        mTabTitles[i].setVisibility(View.VISIBLE);
+                        mTabTitles[i].setText(getString(R.string.tabName, configs[i].getTcuName(), (MOCK[i] ? " (Test)" : "")));
+                    }
+                    menu.performIdentifierAction(id.menu_state_item, 0); // select state fragment
+                    wait.dismiss();
+                    break;
+                default:
+            }
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        Log.i("Terraria", "TerrariaApp.onCreate() start");
         setContentView(layout.activity_main);
+        appView = findViewById(android.R.id.content).getRootView();
+        Log.i("TerrariaBT", "TerrariaApp: onCreate()");
+        instance = this;
+        wait = new WaitSpinner(this);
 
         // Get the configuration from the properties file
         java.util.Properties config = readConfig();
         mTabTitles = new TextView[nrOfTerraria];
         configs = new Properties[nrOfTerraria];
-        connected = new boolean[nrOfTerraria];
         mTabbar = findViewById(id.tabbar);
         mTabbar.setVisibility(View.GONE);
         // Get the properties from the TCU's
         for (int i = 0; i < nrOfTerraria; i++) {
             int tabnr = i + 1;
-            int r = getResources().getIdentifier("tab" + tabnr, "id", "nl.das.terraria2");
+            int r = getResources().getIdentifier("tab" + tabnr, "id", "nl.das.terrariaBT");
             mTabTitles[i] = findViewById(r);
             configs[i] = new Properties();
-            configs[i].setTcuName(config.getProperty("t" + tabnr +".tabtitle"));
+            configs[i].setTcuName(config.getProperty("t" + tabnr +".title"));
+            configs[i].setDeviceName(config.getProperty("t" + tabnr +".hostname"));
+            configs[i].setUuid(config.getProperty("t" + tabnr +".uuid"));
             configs[i].setMockPostfix(config.getProperty("t" + tabnr +".mock_postfix"));
         }
 
@@ -88,71 +187,63 @@ public class TerrariaApp extends AppCompatActivity {
         Toolbar mTopToolbar = findViewById(id.main_toolbar);
         setSupportActionBar(mTopToolbar);
         Objects.requireNonNull(getSupportActionBar()).setDisplayShowTitleEnabled(false);
-        Log.i("Terraria", "TerrariaApp.onCreate() end");
     }
 
     @Override
-    protected void onStart() {
+    public void onStart() {
         super.onStart();
-        Log.i("Terraria", "TerrariaApp.onStart() start");
-        boolean ok = false;
-        // Check if the SharedPreferences are there and filled
-        sp = getApplicationContext().getSharedPreferences("TerrariaApp", 0);
-        boolean showSettings = false;
-        if (sp != null) {
-            for (int i = 0; i < nrOfTerraria; i++) {
-                boolean ipAddressesFilled = !sp.getString("terrarium" + (i + 1) + "_ip_address", "x").equalsIgnoreCase("x");
-                // Check if the ip addresses of the TCUs are reacheable
-                String message = "";
-                if (ipAddressesFilled || MOCK[i]) {
-                    if (!MOCK[i]) {
-                        message = isConnected(i);
-                        ok = (message.length() == 0);
-                    } else {
-                        ok = true;
-                    }
-                }
-                if (!ok) {
-                    if (message.length() == 0) {
-                        message = TerrariaApp.configs[i].getTcuName() + " heeft nog geen IP adres";
-                    }
-                    ndlg = new NotificationDialog(this, "Error", message);
-                    ndlg.show();
-                    showSettings = true;
-                }
-            }
-            if (!showSettings) {
-                getProperties();
-            } else {
-                mTabbar.setVisibility(View.GONE);
-                getSupportFragmentManager()
-                        .beginTransaction()
-                        .replace(id.layout, new SettingsFragment())
-                        .commit();
-            }
+        Log.i("TerrariaBT", "TerrariaApp: onStart()");
+        supportedMessages.add(BTService.CMD_GET_PROPERTIES);
+        curUuid = configs[0].getUuid();
+        connectedDevice = findBTDevice(configs[0].getDeviceName());
+        Intent intent = new Intent(getApplicationContext(), BTService.class);
+        intent.putExtra("UUID", curUuid);
+        intent.putExtra("Device", connectedDevice);
+        startService(intent);
+        bound = false;
+        if(!getApplicationContext().bindService(intent, connection, 0)) {
+            Log.e("TerrariaBT","TerrariaApp: Could not bind to BTService");
         }
-        super.onStart();
-        Log.i("Terraria", "TerrariaApp.onStart() end");
     }
-    /*
-    This is the onClick method of the btn_coninue.
-    It will be clicked by the background thread when the properties of the TCU are read.
-     */
-    public void go(View view) {
-        Log.i("Terraria", "TerrariaApp.go() button clicked");
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Log.i("TerrariaBT", "TerrariaApp: onResume()");
         mTabbar.setVisibility(View.VISIBLE);
         curTabNr = 1;
         mTabTitles[curTabNr - 1].setTextColor(Color.WHITE);
-        curIPAddress = getApplicationContext().getSharedPreferences("TerrariaApp", 0).getString("terrarium" + curTabNr + "_ip_address", "");
-        getSupportFragmentManager()
-                .beginTransaction()
-                .replace(id.layout, StateFragment.newInstance(curTabNr))
-                .commit();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        // Unbind from the service
+        if (bound) {
+            // If we have received the service, and hence registered with
+            // it, then now is the time to unregister.
+            if (svc != null) {
+                try {
+                    Message msg = Message.obtain(null, BTService.MSG_UNREGISTER_CLIENT);
+                    msg.replyTo = mMessenger;
+                    svc.send(msg);
+                } catch (RemoteException e) {
+                    // There is nothing special we need to do if the service
+                    // has crashed.
+                }
+            }
+            unbindService(connection);
+            bound = false;
+        }
+        super.onDestroy();
     }
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-        Log.i("Terraria","TerrariaApp.onCreateOptionsMenu()");
         getMenuInflater().inflate(R.menu.main_menu, menu);
         this.menu = menu;
         return true;
@@ -160,13 +251,12 @@ public class TerrariaApp extends AppCompatActivity {
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        Log.i("Terraria","TerrariaApp.onOptionsItemSelected()");
         int id = item.getItemId();
         if (id == R.id.menu_state_item) {
             mTabbar.setVisibility(View.VISIBLE);
             getSupportFragmentManager()
                     .beginTransaction()
-                    .replace(R.id.layout, StateFragment.newInstance(curTabNr))
+                    .replace(R.id.layout, StateFragment.newInstance(curTabNr), "state")
                     .commit();
             return true;
         }
@@ -174,7 +264,7 @@ public class TerrariaApp extends AppCompatActivity {
             mTabbar.setVisibility(View.VISIBLE);
             getSupportFragmentManager()
                     .beginTransaction()
-                    .replace(R.id.layout, TimersFragment.newInstance(curTabNr))
+                    .replace(R.id.layout, TimersFragment.newInstance(curTabNr), "timers")
                     .commit();
             return true;
         }
@@ -182,7 +272,7 @@ public class TerrariaApp extends AppCompatActivity {
             mTabbar.setVisibility(View.VISIBLE);
             getSupportFragmentManager()
                     .beginTransaction()
-                    .replace(R.id.layout, RulesetsFragment.newInstance(curTabNr))
+                    .replace(R.id.layout, RulesetsFragment.newInstance(curTabNr), "rulesets")
                     .commit();
             return true;
         }
@@ -190,22 +280,15 @@ public class TerrariaApp extends AppCompatActivity {
             mTabbar.setVisibility(View.VISIBLE);
             getSupportFragmentManager()
                     .beginTransaction()
-                    .replace(R.id.layout, HistoryFragment.newInstance(curTabNr))
+                    .replace(R.id.layout, HistoryFragment.newInstance(curTabNr),"history")
                     .commit();
             return true;
-        }
-        if (id == R.id.menu_config_item) {
-            mTabbar.setVisibility(View.GONE);
-            getSupportFragmentManager()
-                    .beginTransaction()
-                    .replace(R.id.layout, new SettingsFragment())
-                    .commit();
         }
         if (id == R.id.menu_help_item) {
             mTabbar.setVisibility(View.GONE);
             getSupportFragmentManager()
                     .beginTransaction()
-                    .replace(R.id.layout, new HelpFragment())
+                    .replace(R.id.layout, new HelpFragment(), "help")
                     .commit();
             return true;
         }
@@ -213,17 +296,29 @@ public class TerrariaApp extends AppCompatActivity {
     }
 
     public void onTabSelect(View v){
-        mTabTitles[curTabNr - 1].setTextColor(Color.BLACK);
-        curTabNr = Integer.parseInt((String)v.getTag());
-        mTabbar.setVisibility(View.VISIBLE);
-        mTabTitles[curTabNr - 1].setTextColor(Color.WHITE);
-        menu.findItem(id.menu_history_item).setVisible(configs[curTabNr - 1].getTcu().endsWith("PI"));
-        String key = "terrarium" + curTabNr + "_ip_address";
-        curIPAddress = getApplicationContext().getSharedPreferences("TerrariaApp", 0).getString(key, "");
-        getSupportFragmentManager()
-                .beginTransaction()
-                .replace(id.layout, StateFragment.newInstance(curTabNr))
-                .commit();
+        Log.i("TerrariaBT","TerrariaApp: onTabSelect()");
+        getApplicationContext().unbindService(connection);
+        List<Fragment> frags = getSupportFragmentManager().getFragments();
+        for (Fragment f : frags) {
+            Log.i("TerrariaBT","TerrariaApp: Active fragment '" + f.getTag() + "' removed");
+            getSupportFragmentManager().beginTransaction().remove(f).commit();
+        }
+        Intent intent = new Intent(getApplicationContext(), BTService.class);
+        if (stopService(intent)) {
+            mTabTitles[curTabNr - 1].setTextColor(Color.BLACK);
+            curTabNr = Integer.parseInt((String)v.getTag());
+            mTabbar.setVisibility(View.VISIBLE);
+            mTabTitles[curTabNr - 1].setTextColor(Color.WHITE);
+            curUuid = configs[curTabNr - 1].getUuid();
+            connectedDevice = findBTDevice(configs[curTabNr - 1].getDeviceName());
+            intent = new Intent(getApplicationContext(), BTService.class);
+            intent.putExtra("UUID", curUuid);
+            intent.putExtra("Device", connectedDevice);
+            startService(intent);
+            if(!getApplicationContext().bindService(intent, connection, 0)) {
+                Log.e("TerrariaBT","TerrariaApp: Could not bind to BTService");
+            }
+        }
     }
 
     private java.util.Properties readConfig() {
@@ -237,88 +332,100 @@ public class TerrariaApp extends AppCompatActivity {
         nrOfTerraria = Integer.parseInt(config.getProperty("nrOfTerraria"));
         return config;
     }
-    public void getProperties() {
-        Log.i("Terraria", "TerrariaApp.getProperties() start");
-        Context ctx = this;
-        wait = new WaitSpinner(this);
-        wait.start();
-        new Thread(() -> {
-            // Executed in separate thread
-            for (int tcunr = 0; tcunr < nrOfTerraria; tcunr++) {
-                Log.i("Terraria", "TerrariaApp.getProperties() thread start or tab " + (tcunr + 1));
-                String name = configs[tcunr].getTcuName();
-                String pfx = configs[tcunr].getMockPostfix();
-                if (MOCK[tcunr]) {
-                    Log.i("Terraria", "Mock Property response");
-                    try {
-                        Gson gson = new Gson();
-                        String response = new BufferedReader(
-                                new InputStreamReader(getResources().getAssets().open("properties_" + pfx + ".json")))
-                                .lines().collect(Collectors.joining("\n"));
-                        configs[tcunr] = gson.fromJson(response, Properties.class);
-                    } catch (IOException e) {
-                        Log.e("Terraria", e.getMessage());
-                    }
-                } else {
-                    try {
-                        String ip = sp.getString("terrarium" + (tcunr + 1) + "_ip_address", "x");
-                        URL url = new URL("http://" + ip + "/properties");
-                        Log.i("Terraria", "TerrariaApp.getProperties() thread get properties from " + url);
-                        HttpURLConnection httpConnection = (HttpURLConnection) url.openConnection();
-                        httpConnection.setRequestMethod("GET");
-                        httpConnection.setRequestProperty("Accept", "application/json");
-                        String json = new BufferedReader(new InputStreamReader(httpConnection.getInputStream(), StandardCharsets.UTF_8))
-                                .lines().collect(Collectors.joining("\n"));
-                        configs[tcunr] = new Gson().fromJson(json, Properties.class);
-//                        Log.i("Terraria", "TerrariaApp.getProperties() thread got it:\n" + json);
-                    } catch (Exception e) {
-                        // Now tell the UI thread to show the dialog and end thread
-                        runOnUiThread(() -> {
-                            wait.dismiss();
-                            ndlg = new NotificationDialog(ctx, "Error", "Terrarium Control Unit '" + name + "' is niet bekend op het netwerk met dit IP adres.");
-                            ndlg.show();
-                        });
-                    }
-                }
-                configs[tcunr].setTcuName(name);
-                configs[tcunr].setMockPostfix(pfx);
+    public void getProperties(int tabnr) {
+        int tcunr = tabnr - 1;
+        String name = configs[tcunr].getTcuName();
+        String pfx = configs[tcunr].getMockPostfix();
+        if (MOCK[tcunr]) {
+            Log.i("TerrariaBT","TerrariaApp: getProperties() from file (mock)");
+            try {
+                String response = new BufferedReader(
+                        new InputStreamReader(getResources().getAssets().open("properties_" + pfx + ".json")))
+                        .lines().collect(Collectors.joining("\n"));
+                Properties tmp = new Gson().fromJson(response, Properties.class);
+                configs[tcunr].setDevices(tmp.getDevices());
+                configs[tcunr].setTcu(tmp.getTcu());
+                configs[tcunr].setNrOfTimers(tmp.getNrOfTimers());
+                configs[tcunr].setNrOfPrograms(tmp.getNrOfPrograms());
+            } catch (IOException e) {
             }
-            Log.i("Terraria","TerrariaApp.getProperties() thread got all properties");
-            // Now tell the UI thread to continue
-            runOnUiThread(() -> {
-                mTabbar.setVisibility(View.VISIBLE);
-                for (int i = 0; i < nrOfTerraria; i++) {
-                    mTabTitles[i].setVisibility(View.VISIBLE);
-                    mTabTitles[i].setText(getString(R.string.tabName, configs[i].getTcuName(), (MOCK[i] ? " (Test)" : "")));
+        } else {
+            if (svc != null) {
+                Log.i("TerrariaBT", "TerrariaApp: getProperties() from server");
+                wait.start();
+                try {
+                    Message msg = Message.obtain(null, BTService.CMD_GET_PROPERTIES);
+                    msg.replyTo = mMessenger;
+                    svc.send(msg);
+                } catch (RemoteException e) {
+                    // There is nothing special we need to do if the service has crashed.
+                    Log.i("TerrariaBT", "TerrariaApp: BTService is crashed");                }
+            } else {
+                Log.i("TerrariaBT", "TerrariaApp: BTService is not ready yet");
+            }
+        }
+    }
+/*
+===================================== Bluetooth methods ==========================================================================
+ */
+    ActivityResultLauncher<Intent> enableBt = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                Log.i("TerrariaBT", "TerrariaApp: " + String.valueOf(result.getResultCode()));
+                btEnabled = true;
+            }
+    );
+
+    ActivityResultLauncher<String> reqPermission = registerForActivityResult(new ActivityResultContracts.RequestPermission(),
+            result -> Log.i("TerrariaBT", "TerrariaApp: " + String.valueOf(result))
+    );
+    
+    private BluetoothDevice findBTDevice(String hostName) {
+        BluetoothDevice curBTDevice = null;
+        // Get the list of paired devices from the local Bluetooth adapter
+        BluetoothManager bluetoothManager = getSystemService(BluetoothManager.class);
+        BluetoothAdapter bluetoothAdapter = bluetoothManager.getAdapter();
+        if (bluetoothAdapter == null) {
+            Log.i("TerrariaBT", "TerrariaApp: No bluetooth adapter found.");
+        } else {
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                Log.e("TerrariaBT", "TerrariaApp: : android.permission.BLUETOOTH_SCAN not given. ");
+                reqPermission.launch(Manifest.permission.BLUETOOTH_SCAN);
+            }
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                Log.e("TerrariaBT", "TerrariaApp: : android.permission.BLUETOOTH_CONNECT not given.");
+                reqPermission.launch(Manifest.permission.BLUETOOTH_CONNECT);
+            }
+            if (!bluetoothAdapter.isEnabled()) {
+                Log.i("TerrariaBT", "TerrariaApp: Bluetooth is not enabled.");
+                Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+                try {
+                    enableBt.launch(enableBtIntent);
+                } catch (ActivityNotFoundException e) {
+                    Log.e("TerrariaBT", "TerrariaApp: " + e.getMessage());
                 }
-                curTabNr = 1;
-                btnContinue.callOnClick();
-                wait.dismiss();
-            });
-        }).start();
-        Log.i("Terraria", "TerrariaApp.getProperties() end");
+            }
+            Log.i("TerrariaBT", "TerrariaApp: Bluetooth adapter ready.");
+            Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
+            Log.i("TerrariaBT", "TerrariaApp: found " + pairedDevices.size() + " paired devices.");
+            curBTDevice = null;
+            if (pairedDevices.size() > 0) {
+                // There are paired devices. Get the name and address of each paired device.
+                for (BluetoothDevice device : pairedDevices) {
+                    String deviceName = device.getName();
+                    if (deviceName.equalsIgnoreCase(hostName)) {
+                        curBTDevice = device;
+                    }
+                }
+            }
+            if (curBTDevice == null) {
+                runOnUiThread(() -> {
+                    wait.dismiss();
+                    Utils.showMessage(getBaseContext(), appView, "TCU '" + hostName + "' is niet gekoppeld.");
+                });
+            }
+        }
+        Log.i("TerrariaBT", "TerrariaApp: found the device '" + curBTDevice.getName() + "'.");
+        return curBTDevice;
     }
 
-    public String isConnected(int tcunr) {
-        Log.i("Terraria", "TerrariaApp.isConnected() start");
-        String message = "";
-        // Executed in separate thread
-        Runtime runtime = Runtime.getRuntime();
-        String ip = sp.getString("terrarium" + (tcunr + 1) + "_ip_address", "x");
-        try {
-            Log.i("Terraria", "Pinging " + ip + "...");
-            Process ipProcess = runtime.exec("/system/bin/ping -c 1 -w 1 " + ip);
-            int exitValue = ipProcess.waitFor();
-            Log.i("Terraria", ip + " " + (exitValue == 0 ? "found" : "not found"));
-            if (exitValue != 0) {
-                message = TerrariaApp.configs[tcunr].getTcuName() + " is niet bereikbaar op IP adres " + ip;
-            }
-            connected[tcunr] = (exitValue == 0);
-            ipProcess.destroy();
-        } catch (IOException | InterruptedException e) {
-            e.printStackTrace();
-        }
-        Log.i("Terraria", "TerrariaApp.isConnected() end");
-        return message;
-    }
 }
