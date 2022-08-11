@@ -224,7 +224,7 @@ public class TerrariaApp extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         Log.i("TerrariaBT", "TerrariaApp: onPause()");
-        unbindService(connection);
+        getApplicationContext().unbindService(connection);
         bound = false;
     }
 
