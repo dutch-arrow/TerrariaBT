@@ -1,6 +1,9 @@
 package nl.das.terraria.fragments;
 
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.os.Bundle;
 
 import androidx.annotation.NonNull;
@@ -8,6 +11,12 @@ import androidx.annotation.Nullable;
 import androidx.constraintlayout.widget.ConstraintLayout;
 import androidx.fragment.app.Fragment;
 
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Message;
+import android.os.Messenger;
+import android.os.RemoteException;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -22,22 +31,27 @@ import com.google.gson.reflect.TypeToken;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+import nl.das.terraria.BTService;
 import nl.das.terraria.R;
 import nl.das.terraria.TerrariaApp;
 import nl.das.terraria.Utils;
 import nl.das.terraria.dialogs.WaitSpinner;
+import nl.das.terraria.json.Error;
 import nl.das.terraria.json.Timer;
+import nl.das.terraria.json.Timers;
 
 public class TimersListFragment extends Fragment {
 
     private String deviceID;
     private int tabnr;
-    private String curIPAddress;
+    private final ArrayList<Integer> supportedMessages = new ArrayList<>();
+    private Messenger svc;
     private Button btnSave;
     private Button btnRefresh;
     private final EditText[] edtTimeOn = new EditText[5];
@@ -50,7 +64,10 @@ public class TimersListFragment extends Fragment {
     private WaitSpinner wait;
     private InputMethodManager imm;
 
-    public TimersListFragment() { }
+    public TimersListFragment() {
+        supportedMessages.add(BTService.CMD_GET_TIMERS);
+        supportedMessages.add(BTService.CMD_SET_TIMERS);
+    }
 
     public static TimersListFragment newInstance(int tabnr, String device) {
         TimersListFragment fragment = new TimersListFragment();
@@ -59,6 +76,84 @@ public class TimersListFragment extends Fragment {
         args.putInt("tabnr", tabnr);
         fragment.setArguments(args);
         return fragment;
+    }
+    /**
+     * Service connection that connects to the BTService.
+     */
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            // This is called when the connection with the service has been
+            // established, giving us the object we can use to
+            // interact with the service.  We are communicating with the
+            // service using a Messenger, so here we get a client-side
+            // representation of that from the raw IBinder object.
+            svc = new Messenger(service);
+            // We want to monitor the service for as long as we are
+            // connected to it.
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_REGISTER_CLIENT);
+                Bundle bdl = new Bundle();
+                bdl.putIntegerArrayList("commands", supportedMessages);
+                msg.setData(bdl);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+                wait.start();
+                getTimers();
+            } catch (RemoteException e) {
+                // In this case the service has crashed before we could even
+                // do anything with it; we can count on soon being
+                // disconnected (and then reconnected if it can be restarted)
+                // so there is no need to do anything here.
+            }
+        }
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            // This is called when the connection with the service has been
+            // unexpectedly disconnected -- that is, its process crashed.
+            svc = null;
+        }
+    };
+
+    /**
+     * Target we publish for clients to send messages to IncomingHandler.
+     */
+    final Messenger mMessenger = new Messenger(new IncomingHandler());
+
+    /**
+     * Handler of incoming messages from service.
+     */
+    class IncomingHandler extends Handler {
+        @Override
+        public void handleMessage(Message msg) {
+            super.handleMessage(msg);
+            Log.i("TerrariaBT","TimersListFragment: handleMessage() for message " + msg.what );
+            switch (msg.what) {
+                case BTService.CMD_GET_TIMERS:
+                    Log.i("TerrariaBT", "TimersListFragment: " + msg.obj.toString());
+                    Timers devTimers = new Gson().fromJson(msg.obj.toString(), Timers.class);
+                    timers.put(deviceID, devTimers.getTimers());
+                    updateTimers();
+                    wait.dismiss();
+                    break;
+                case BTService.CMD_SET_TIMERS:
+                    if (msg.obj != null && msg.obj.toString().length() > 0) {
+                        String errmsg;
+                        Error err = new Gson().fromJson(msg.obj.toString(), Error.class);
+                        if (err != null) {
+                            errmsg = err.getError();
+                        } else {
+                            errmsg = msg.obj.toString();
+                        }
+                        Utils.showMessage(requireContext(), requireView(), errmsg);
+                    } else {
+                        Log.i("TerrariaBT", "TimersListFragment: No response");
+                    }
+                    wait.dismiss();
+                    break;
+                default:
+            }
+        }
     }
 
     @Override
@@ -77,7 +172,13 @@ public class TimersListFragment extends Fragment {
 
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
-        curIPAddress = requireContext().getSharedPreferences("TerrariaApp", 0).getString("terrarium" + tabnr + "_ip_address", "");
+        Log.i("TerrariaBT", "TimersListFragment: onViewCreated()");
+        wait = new WaitSpinner(requireContext());
+        // Bind to BTService
+        Intent intent = new Intent(requireContext(), BTService.class);
+        if(!requireContext().bindService(intent, connection, 0)) {
+            Log.e("TerrariaBT","TimersListFragment: Could not bind to BTService");
+        }
         btnSave = view.findViewById(R.id.ti_btnSave);
         btnSave.setEnabled(false);
         btnSave.setOnClickListener(v -> {
@@ -96,7 +197,7 @@ public class TimersListFragment extends Fragment {
         int resId;
         for (int i = 0; i < 5; i++) {
             int nr = i;
-            resId = getResources().getIdentifier("it_edtTimeOn_" + (i + 1), "id", getContext().getPackageName());
+            resId = getResources().getIdentifier("it_edtTimeOn_" + (i + 1), "id", requireContext().getPackageName());
             edtTimeOn[i] = view.findViewById(resId);
             edtTimeOn[i].setOnEditorActionListener((v, actionId, event) -> {
                 if (actionId == EditorInfo.IME_ACTION_DONE) {
@@ -125,7 +226,7 @@ public class TimersListFragment extends Fragment {
                     }
                 }
             }));
-            resId = getResources().getIdentifier("it_edtTimeOff_" + (i + 1), "id", getContext().getPackageName());
+            resId = getResources().getIdentifier("it_edtTimeOff_" + (i + 1), "id", requireContext().getPackageName());
             edtTimeOff[i] = view.findViewById(resId);
             edtTimeOff[i].setOnEditorActionListener((v, actionId, event) -> {
                 if (actionId == EditorInfo.IME_ACTION_DONE) {
@@ -162,7 +263,7 @@ public class TimersListFragment extends Fragment {
                     }
                 }
             }));
-            resId = getResources().getIdentifier("it_edtRepeat_" + (i + 1), "id", getContext().getPackageName());
+            resId = getResources().getIdentifier("it_edtRepeat_" + (i + 1), "id", requireContext().getPackageName());
             edtRepeat[i] = view.findViewById(resId);
             edtRepeat[i].setOnEditorActionListener((v, actionId, event) -> {
                 if (actionId == EditorInfo.IME_ACTION_DONE) {
@@ -203,7 +304,7 @@ public class TimersListFragment extends Fragment {
                     }
                 }
             }));
-            resId = getResources().getIdentifier("it_edtPeriod_" + (i + 1), "id", getContext().getPackageName());
+            resId = getResources().getIdentifier("it_edtPeriod_" + (i + 1), "id", requireContext().getPackageName());
             edtPeriod[i] = view.findViewById(resId);
             edtPeriod[i].setOnEditorActionListener((v, actionId, event) -> {
                 if (actionId == EditorInfo.IME_ACTION_DONE) {
@@ -255,8 +356,24 @@ public class TimersListFragment extends Fragment {
                 }
             }));
         }
-        getTimers();
      }
+
+    @Override
+    public void onDestroy() {
+        if (svc != null) {
+            super.onDestroy();
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_UNREGISTER_CLIENT);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+            } catch (RemoteException ignored) {
+            }
+            requireContext().unbindService(connection);
+            Log.i("TerrariaBT", "TimersListFragment: onDestroy() end");
+        } else {
+            Log.i("TerrariaBT", "TimersListFragment: why is onDestroy() called?");
+        }
+    }
 
     private void updateTimers() {
         int[] ids = {R.id.it_layTimer_1, R.id.it_layTimer_2, R.id.it_layTimer_3, R.id.it_layTimer_4, R.id.it_layTimer_5};
@@ -265,22 +382,20 @@ public class TimersListFragment extends Fragment {
             fcv.setVisibility(View.VISIBLE);
             edtTimeOn[i].setText(Utils.cvthm2string(Objects.requireNonNull(timers.get(deviceID))[i].getHourOn(), Objects.requireNonNull(timers.get(deviceID))[i].getMinuteOn()));
             edtTimeOff[i].setText(Utils.cvthm2string(Objects.requireNonNull(timers.get(deviceID))[i].getHourOff(), Objects.requireNonNull(timers.get(deviceID))[i].getMinuteOff()));
-            edtRepeat[i].setText(Objects.requireNonNull(timers.get(deviceID))[i].getRepeat() + "");
-            edtPeriod[i].setText(Objects.requireNonNull(timers.get(deviceID))[i].getPeriod() + "");
+            edtRepeat[i].setText(String.valueOf(Objects.requireNonNull(timers.get(deviceID))[i].getRepeat()));
+            edtPeriod[i].setText(String.valueOf(Objects.requireNonNull(timers.get(deviceID))[i].getPeriod()));
         }
 
     }
 
     private void getTimers() {
-        wait = new WaitSpinner(requireContext());
-        wait.start();
         if (TerrariaApp.MOCK[tabnr - 1]) {
             try {
                 Gson gson = new Gson();
                 String response = new BufferedReader(
                         new InputStreamReader(getResources().getAssets().open("timers_" + deviceID + "_" + TerrariaApp.configs[tabnr - 1].getMockPostfix() + ".json")))
                         .lines().collect(Collectors.joining("\n"));
-                Timer[] devTimers = gson.fromJson(response.toString(), new TypeToken<Timer[]>() {}.getType());
+                Timer[] devTimers = gson.fromJson(response, new TypeToken<Timer[]>() {}.getType());
                 timers.put(deviceID, devTimers);
                 updateTimers();
                 wait.dismiss();
@@ -288,54 +403,37 @@ public class TimersListFragment extends Fragment {
                 wait.dismiss();
             }
         } else {
-//            String url = "http://" + curIPAddress + "/timers/" + deviceID;
-//            // Request sensor readings.
-//            JsonArrayRequest jsonArrayRequest = new JsonArrayRequest(Request.Method.GET, url, null,
-//                    response1 -> {
-//                        Gson gson = new Gson();
-//                        try {
-//                            Timer[] devTimers = gson.fromJson(response1.toString(), new TypeToken<Timer[]>() {
-//                            }.getType());
-//                            timers.put(deviceID, devTimers);
-//                            updateTimers();
-//                            wait.dismiss();
-//                        } catch (JsonSyntaxException e) {
-//                            new NotificationDialog(requireContext(), "Error", "Timers response contains errors:\n" + e.getMessage()).show();
-//                        }
-//                    },
-//                    error -> {
-//                        if (error.getMessage() == null) {
-//                            StringWriter sw = new StringWriter();
-//                            PrintWriter pw = new PrintWriter(sw);
-//                            error.printStackTrace(pw);
-//                        } else {
-//                            new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
-//                        }
-//                        wait.dismiss();
-//                    }
-//            );
-//            // Add the request to the RequestQueue.
-//            RequestQueueSingleton.getInstance(requireContext()).add(jsonArrayRequest);
+            if (svc != null) {
+                Log.i("TerrariaBT", "TimersListFragment: getTimers() from server");
+                try {
+                    Message msg = Message.obtain(null, BTService.CMD_GET_TIMERS);
+                    msg.replyTo = mMessenger;
+                    msg.obj = deviceID;
+                    svc.send(msg);
+                } catch (RemoteException e) {
+                    // There is nothing special we need to do if the service has crashed.
+                }
+            } else {
+                Log.i("TerrariaBT", "TimersListFragment: BTService is not ready yet");
+            }
         }
     }
 
     private void saveTimers() {
-//        wait = new WaitSpinner(requireContext());
-//        wait.start();
-//        String url = "http://" + curIPAddress + "/timers/" + deviceID;
-//        Gson gson = new Gson();
-//        String json = gson.toJson(timers.get(deviceID));
-//        VoidRequest req = new VoidRequest(Request.Method.PUT, url, json,
-//                response -> {
-//                    wait.dismiss();
-//                },
-//                error -> {
-//                    wait.dismiss();
-//                    new NotificationDialog(requireActivity(), "Error", "Kontakt met Control Unit verloren.").show();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(requireContext()).add(req);
+        wait.start();
+        if (svc != null) {
+            try {
+                Log.i("TerrariaBT", "TimersListFragment: saveTimers()");
+                Message msg = Message.obtain(null, BTService.CMD_SET_TIMERS);
+                msg.replyTo = mMessenger;
+                msg.obj = new Gson().toJson(timers.get(deviceID));
+                svc.send(msg);
+            } catch (RemoteException e) {
+                // There is nothing special we need to do if the service has crashed.
+            }
+        } else {
+            Log.i("TerrariaBT", "TimersListFragment: BTService is not ready yet");
+        }
     }
 
     public boolean checkTime(EditText field) {

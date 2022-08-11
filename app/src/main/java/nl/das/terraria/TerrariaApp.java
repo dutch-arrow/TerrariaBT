@@ -12,12 +12,10 @@ import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
-import android.bluetooth.BluetoothSocket;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.graphics.Color;
@@ -31,7 +29,6 @@ import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
-import android.widget.Button;
 import android.widget.TextView;
 
 import com.google.gson.Gson;
@@ -59,30 +56,30 @@ public class TerrariaApp extends AppCompatActivity {
 
     public static int nrOfTerraria;
     public static Properties[] configs;
-    public static SharedPreferences sp;
     public static int curTabNr;
     private static String curUuid;
-    private static boolean btEnabled;
-    private boolean connected = false;
     public TerrariaApp instance;
-    private ArrayList<Integer> supportedMessages = new ArrayList<>();
+    private final ArrayList<Integer> supportedMessages = new ArrayList<>();
     private Messenger svc;
 
-    public static View appView;
+    public View appView;
 
     /** Flag indicating whether we have called bind on the BTService. */
     private boolean bound;
     private BluetoothDevice connectedDevice;
-    private BluetoothSocket skt;
     private View mTabbar;
     private TextView[] mTabTitles;
-    private Button btnContinue;
     private WaitSpinner wait;
     public Menu menu;
+
+    public TerrariaApp() {
+        supportedMessages.add(BTService.CMD_GET_PROPERTIES);
+    }
+
     /**
      * Service connection that connects to the BTService.
      */
-    private ServiceConnection connection = new ServiceConnection() {
+    private final ServiceConnection connection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             // This is called when the connection with the service has been
@@ -131,24 +128,21 @@ public class TerrariaApp extends AppCompatActivity {
         public void handleMessage(Message msg) {
             super.handleMessage(msg);
             Log.i("TerrariaBT","TerrariaApp: handleMessage() for message " + msg.what );
-            switch (msg.what) {
-                case BTService.CMD_GET_PROPERTIES:
-                    Log.i("TerrariaBT", "TerrariaApp: " + msg.obj.toString());
-                    Properties tmp = new Gson().fromJson(msg.obj.toString(), Properties.class);
-                    configs[curTabNr - 1].setDevices(tmp.getDevices());
-                    configs[curTabNr - 1].setTcu(tmp.getTcu());
-                    configs[curTabNr - 1].setNrOfTimers(tmp.getNrOfTimers());
-                    configs[curTabNr - 1].setNrOfPrograms(tmp.getNrOfPrograms());
-                    mTabbar.setVisibility(View.VISIBLE);
-                    menu.findItem(id.menu_history_item).setVisible(configs[curTabNr - 1].getTcu().endsWith("PI"));
-                    for (int i = 0; i < nrOfTerraria; i++) {
-                        mTabTitles[i].setVisibility(View.VISIBLE);
-                        mTabTitles[i].setText(getString(R.string.tabName, configs[i].getTcuName(), (MOCK[i] ? " (Test)" : "")));
-                    }
-                    menu.performIdentifierAction(id.menu_state_item, 0); // select state fragment
-                    wait.dismiss();
-                    break;
-                default:
+            if (msg.what == BTService.CMD_GET_PROPERTIES) {
+                Log.i("TerrariaBT", "TerrariaApp: " + msg.obj.toString());
+                Properties tmp = new Gson().fromJson(msg.obj.toString(), Properties.class);
+                configs[curTabNr - 1].setDevices(tmp.getDevices());
+                configs[curTabNr - 1].setTcu(tmp.getTcu());
+                configs[curTabNr - 1].setNrOfTimers(tmp.getNrOfTimers());
+                configs[curTabNr - 1].setNrOfPrograms(tmp.getNrOfPrograms());
+                mTabbar.setVisibility(View.VISIBLE);
+                menu.findItem(id.menu_history_item).setVisible(configs[curTabNr - 1].getTcu().endsWith("PI"));
+                for (int i = 0; i < nrOfTerraria; i++) {
+                    mTabTitles[i].setVisibility(View.VISIBLE);
+                    mTabTitles[i].setText(getString(string.tabName, configs[i].getTcuName(), (MOCK[i] ? " (Test)" : "")));
+                }
+                menu.performIdentifierAction(id.menu_state_item, 0); // select state fragment
+                wait.dismiss();
             }
         }
     }
@@ -180,29 +174,35 @@ public class TerrariaApp extends AppCompatActivity {
             configs[i].setMockPostfix(config.getProperty("t" + tabnr +".mock_postfix"));
         }
 
-        // This attribute refers to the hidden toolbar button
-        btnContinue = findViewById(id.btn_continue);
-
         // Create the main toolbar
         Toolbar mTopToolbar = findViewById(id.main_toolbar);
         setSupportActionBar(mTopToolbar);
         Objects.requireNonNull(getSupportActionBar()).setDisplayShowTitleEnabled(false);
-    }
 
-    @Override
-    public void onStart() {
-        super.onStart();
-        Log.i("TerrariaBT", "TerrariaApp: onStart()");
-        supportedMessages.add(BTService.CMD_GET_PROPERTIES);
+        // Start the BTService and bind to it
         curUuid = configs[0].getUuid();
         connectedDevice = findBTDevice(configs[0].getDeviceName());
         Intent intent = new Intent(getApplicationContext(), BTService.class);
         intent.putExtra("UUID", curUuid);
         intent.putExtra("Device", connectedDevice);
         startService(intent);
-        bound = false;
-        if(!getApplicationContext().bindService(intent, connection, 0)) {
-            Log.e("TerrariaBT","TerrariaApp: Could not bind to BTService");
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        Log.i("TerrariaBT", "TerrariaApp: onStart()");
+    }
+
+    @Override
+    public void onRestart() {
+        super.onRestart();
+        Log.i("TerrariaBT", "TerrariaApp: onRestart()");
+        if (svc == null) {
+            Log.i("TerrariaBT", "TerrariaApp: onRestart() BTService is not bound");
+        } else {
+            Log.i("TerrariaBT", "TerrariaApp: onRestart() BTService is still bound");
+
         }
     }
 
@@ -213,15 +213,30 @@ public class TerrariaApp extends AppCompatActivity {
         mTabbar.setVisibility(View.VISIBLE);
         curTabNr = 1;
         mTabTitles[curTabNr - 1].setTextColor(Color.WHITE);
+        bound = false;
+        Intent intent = new Intent(getApplicationContext(), BTService.class);
+        if (!getApplicationContext().bindService(intent, connection, 0)) {
+            Log.e("TerrariaBT", "TerrariaApp: Could not bind to BTService");
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        Log.i("TerrariaBT", "TerrariaApp: onPause()");
+        unbindService(connection);
+        bound = false;
     }
 
     @Override
     protected void onStop() {
         super.onStop();
+        Log.i("TerrariaBT", "TerrariaApp: onStop()");
     }
 
     @Override
     protected void onDestroy() {
+        Log.i("TerrariaBT", "TerrariaApp: onDestroy()");
         // Unbind from the service
         if (bound) {
             // If we have received the service, and hence registered with
@@ -334,7 +349,6 @@ public class TerrariaApp extends AppCompatActivity {
     }
     public void getProperties(int tabnr) {
         int tcunr = tabnr - 1;
-        String name = configs[tcunr].getTcuName();
         String pfx = configs[tcunr].getMockPostfix();
         if (MOCK[tcunr]) {
             Log.i("TerrariaBT","TerrariaApp: getProperties() from file (mock)");
@@ -347,7 +361,7 @@ public class TerrariaApp extends AppCompatActivity {
                 configs[tcunr].setTcu(tmp.getTcu());
                 configs[tcunr].setNrOfTimers(tmp.getNrOfTimers());
                 configs[tcunr].setNrOfPrograms(tmp.getNrOfPrograms());
-            } catch (IOException e) {
+            } catch (IOException ignored) {
             }
         } else {
             if (svc != null) {
@@ -370,13 +384,12 @@ public class TerrariaApp extends AppCompatActivity {
  */
     ActivityResultLauncher<Intent> enableBt = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
             result -> {
-                Log.i("TerrariaBT", "TerrariaApp: " + String.valueOf(result.getResultCode()));
-                btEnabled = true;
+                Log.i("TerrariaBT", "TerrariaApp: " + result.getResultCode());
             }
     );
 
     ActivityResultLauncher<String> reqPermission = registerForActivityResult(new ActivityResultContracts.RequestPermission(),
-            result -> Log.i("TerrariaBT", "TerrariaApp: " + String.valueOf(result))
+            result -> Log.i("TerrariaBT", "TerrariaApp: " + result)
     );
     
     private BluetoothDevice findBTDevice(String hostName) {
@@ -407,7 +420,6 @@ public class TerrariaApp extends AppCompatActivity {
             Log.i("TerrariaBT", "TerrariaApp: Bluetooth adapter ready.");
             Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
             Log.i("TerrariaBT", "TerrariaApp: found " + pairedDevices.size() + " paired devices.");
-            curBTDevice = null;
             if (pairedDevices.size() > 0) {
                 // There are paired devices. Get the name and address of each paired device.
                 for (BluetoothDevice device : pairedDevices) {
@@ -424,6 +436,7 @@ public class TerrariaApp extends AppCompatActivity {
                 });
             }
         }
+        assert curBTDevice != null;
         Log.i("TerrariaBT", "TerrariaApp: found the device '" + curBTDevice.getName() + "'.");
         return curBTDevice;
     }

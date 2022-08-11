@@ -1,5 +1,8 @@
 package nl.das.terraria.fragments;
 
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.graphics.Color;
 import android.os.Bundle;
 
@@ -7,6 +10,12 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Message;
+import android.os.Messenger;
+import android.os.RemoteException;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -24,17 +33,28 @@ import com.github.mikephil.charting.data.LineData;
 import com.github.mikephil.charting.data.LineDataSet;
 import com.github.mikephil.charting.formatter.ValueFormatter;
 import com.github.mikephil.charting.interfaces.datasets.ILineDataSet;
+import com.google.gson.Gson;
+import com.google.gson.JsonParseException;
+import com.google.gson.reflect.TypeToken;
 
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
+import nl.das.terraria.BTService;
 import nl.das.terraria.R;
+import nl.das.terraria.Utils;
 import nl.das.terraria.dialogs.WaitSpinner;
+import nl.das.terraria.json.Error;
+import nl.das.terraria.json.FileContent;
+import nl.das.terraria.json.Files;
+import nl.das.terraria.json.SprayerRule;
 
 /**
  * A simple {@link Fragment} subclass.
@@ -46,29 +66,31 @@ public class HistoryFragment extends Fragment {
     private int curTabNr;
     private WaitSpinner wait;
 
-    private static String curIPAddress;
-    private Spinner list;
+    private boolean bound;
+    private final ArrayList<Integer> supportedMessages = new ArrayList<>();
+    private Messenger svc;
     private LineChart chart;
-    private List<ILineDataSet> dataSets = new ArrayList<>();
-    private LineData lineData = new LineData(dataSets);
+    private final List<ILineDataSet> dataSets = new ArrayList<>();
+    private final LineData lineData = new LineData(dataSets);
 
     // map: <device, <time, on>>
-    private Map<String, Map<Integer, Boolean>> history_state = new HashMap<>();
-    private Map<Integer, Integer> history_temp = new HashMap<>();
-    private static SimpleDateFormat dtfmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
-    private static SimpleDateFormat tmfmt = new SimpleDateFormat("HH:mm", Locale.US);
+    private final Map<String, Map<Integer, Boolean>> history_state = new HashMap<>();
+    private final Map<Integer, Integer> history_temp = new HashMap<>();
+    private static final SimpleDateFormat dtfmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
+    private static final SimpleDateFormat tmfmt = new SimpleDateFormat("HH:mm", Locale.US);
     private long xstart;
     private int hmstart;
     private long xend;
-    private String[] devicesNl = {"lamp1", "lamp2", "lamp3", "lamp4", "uvlamp", "lamp6", "pomp", "nevel", "sproeier", "vent_in", "vent_uit", ""};
-    private String[] devicesEn = {"light1", "light2", "light3", "light4", "uvlight", "light6", "pump", "mist", "sprayer", "fan_in", "fan_out", ""};
-    private boolean[] devState = {false, false, false, false, false, false, false, false, false, false, false, false};
-    private int chartHeight;
-    private int chartWidth;
+    private final String[] devicesNl = {"lamp1", "lamp2", "lamp3", "lamp4", "uvlamp", "lamp6", "pomp", "nevel", "sproeier", "vent_in", "vent_uit", ""};
+    private final String[] devicesEn = {"light1", "light2", "light3", "light4", "uvlight", "light6", "pump", "mist", "sprayer", "fan_in", "fan_out", ""};
+    private final boolean[] devState = {false, false, false, false, false, false, false, false, false, false, false, false};
     private List<String> fileList = new ArrayList<>();
 
     public HistoryFragment() {
-        // Required empty public constructor
+        supportedMessages.add(BTService.CMD_GET_TEMP_FILES);
+        supportedMessages.add(BTService.CMD_GET_TEMP_FILE);
+        supportedMessages.add(BTService.CMD_GET_STATE_FILES);
+        supportedMessages.add(BTService.CMD_GET_STATE_FILE);
     }
 
     public static HistoryFragment newInstance(int tabnr) {
@@ -77,6 +99,149 @@ public class HistoryFragment extends Fragment {
         args.putInt("tabnr", tabnr);
         fragment.setArguments(args);
         return fragment;
+    }
+    /**
+     * Service connection that connects to the BTService.
+     */
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            // This is called when the connection with the service has been
+            // established, giving us the object we can use to
+            // interact with the service.  We are communicating with the
+            // service using a Messenger, so here we get a client-side
+            // representation of that from the raw IBinder object.
+            svc = new Messenger(service);
+            bound = true;
+            // We want to monitor the service for as long as we are
+            // connected to it.
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_REGISTER_CLIENT);
+                Bundle bdl = new Bundle();
+                bdl.putIntegerArrayList("commands", supportedMessages);
+                msg.setData(bdl);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+                wait.start();
+                getHistoryFiles();
+            } catch (RemoteException e) {
+                // In this case the service has crashed before we could even
+                // do anything with it; we can count on soon being
+                // disconnected (and then reconnected if it can be restarted)
+                // so there is no need to do anything here.
+            }
+        }
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            // This is called when the connection with the service has been
+            // unexpectedly disconnected -- that is, its process crashed.
+            svc = null;
+            bound = false;
+        }
+    };
+
+    /**
+     * Target we publish for clients to send messages to IncomingHandler.
+     */
+    final Messenger mMessenger = new Messenger(new IncomingHandler());
+
+    /**
+     * Handler of incoming messages from service.
+     */
+    class IncomingHandler extends Handler {
+        @Override
+        public void handleMessage(Message msg) {
+            super.handleMessage(msg);
+            Log.i("TerrariaBT","HistoryFragment: handleMessage() for message " + msg.what );
+            Log.i("TerrariaBT", "HistoryFragment: " + msg.obj.toString());
+            switch (msg.what) {
+                case BTService.CMD_GET_TEMP_FILES:
+                    wait.dismiss();
+                    break;
+                case BTService.CMD_GET_TEMP_FILE:
+                    try {
+                        xend = 0;
+                        /*
+                            2021-08-01 05:00:00 r=21 t=21
+                            2021-08-01 06:00:00 r=21 t=21
+                            2021-08-01 06:45:00 r=21 t=21
+                         */
+                        String content = new Gson().fromJson(msg.obj.toString(), FileContent.class).getContent();
+                        String[] lines = content.split("\n");
+                        for (String line : lines) {
+                            String[] parts = line.split(" ");
+                            if (parts[2].equalsIgnoreCase("start")) {
+                                xstart = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
+                                String[] tm = parts[1].split(":");
+                                hmstart = Integer.parseInt(tm[0]) * 3600 + Integer.parseInt(tm[1]) * 60 + Integer.parseInt(tm[2]);
+                            } else if (parts[2].equalsIgnoreCase("stop")) {
+                                xend = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
+                            } else {
+                                int tm = (int)((Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000) - xstart);
+                                int terr = Integer.parseInt(parts[3].split("=")[1]);
+                                history_temp.put(tm, terr);
+                            }
+                            if (xend == 0) {
+                                xend = xstart + 24 * 60 * 60;
+                            }
+                        }
+                        drawTerrTempLine(0xFFF43F1A);
+                    } catch (ParseException e) {
+                        Log.i("TerrariaBT","HistoryFragment: Parse error in parsing Temp trace file");
+                        e.printStackTrace();
+                        Utils.showMessage(requireContext(), getView(), e.getMessage());
+                    }
+                    wait.dismiss();
+                    break;
+                case BTService.CMD_GET_STATE_FILES:
+                    Files files = new Gson().fromJson(msg.obj.toString(), Files.class);
+                    for (String f : files.getFiles()) {
+                        fileList.add(f.replaceAll("state_", ""));
+                    }
+                    fileList.sort(Collections.reverseOrder());
+                    wait.dismiss();
+                    break;
+                case BTService.CMD_GET_STATE_FILE:
+                    try {
+                        xend = 0;
+                        /*  0123456789012345678
+                            2021-08-01 05:00:00 start
+                            2021-08-01 06:00:00 mist 1 -1
+                            2021-08-01 06:00:00 fan_in 0
+                            2021-08-01 06:00:00 fan_out 0
+                        */
+                        String content = new Gson().fromJson(msg.obj.toString(), FileContent.class).getContent();
+                        String[] lines = content.split("\n");
+                        for (String line : lines) {
+                            String[] parts = line.split(" ");
+                            if (parts[2].equalsIgnoreCase("start")) {
+                                xstart = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
+                                String[] tm = parts[1].split(":");
+                                hmstart = Integer.parseInt(tm[0]) * 3600 + Integer.parseInt(tm[1]) * 60 + Integer.parseInt(tm[2]);
+                            } else if (parts[2].equalsIgnoreCase("stop")) {
+                                xend = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
+                            } else {
+                                int tm = (int) ((Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000) - xstart);
+                                String dev = parts[2];
+                                boolean on = parts[3].equalsIgnoreCase("1");
+                                history_state.computeIfAbsent(dev, k -> new HashMap<>());
+                                Objects.requireNonNull(history_state.get(dev)).put(tm, on);
+                            }
+                            if (xend == 0) {
+                                xend = xstart + 24 * 60 * 60;
+                            }
+                        }
+                        drawChart();
+                    } catch (ParseException e) {
+                        Log.i("TerrariaBT","HistoryFragment: Parse error in parsing State trace file");
+                        e.printStackTrace();
+                        Utils.showMessage(requireContext(), getView(), e.getMessage());
+                    }
+                    wait.dismiss();
+                    break;
+                default:
+            }
+        }
     }
 
     @Override
@@ -97,8 +262,13 @@ public class HistoryFragment extends Fragment {
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
-
-        curIPAddress = requireContext().getSharedPreferences("TerrariaApp", 0).getString("terrarium" + curTabNr + "_ip_address", "");
+        wait = new WaitSpinner(requireActivity());
+        // Bind to BTService
+        bound = false;
+        Intent intent = new Intent(getContext(), BTService.class);
+        if(!requireContext().bindService(intent, connection, 0)) {
+            Log.e("TerrariaBT","HistoryFragment: Could not bind to BTService");
+        }
 
         chart = view.findViewById(R.id.linechart);
         chart.setHardwareAccelerationEnabled(true);
@@ -112,10 +282,8 @@ public class HistoryFragment extends Fragment {
         chart.setDrawGridBackground(true);
         chart.setDrawMarkers(false);
         chart.getLegend().setEnabled(false);
-        chartHeight = chart.getMeasuredHeight();
-        chartWidth = chart.getMeasuredWidth();
 
-        list = view.findViewById(R.id.his_list);
+        Spinner list = view.findViewById(R.id.his_list);
         fileList = new ArrayList<>();
         fileList.add("<select day>");
         ArrayAdapter<String> adapter = new ArrayAdapter<>(getActivity(), R.layout.file_dropdown, fileList);
@@ -140,105 +308,59 @@ public class HistoryFragment extends Fragment {
             }
         });
         Button btnView = view.findViewById(R.id.his_OkButton);
-        btnView.setOnClickListener(v -> {
-            getParentFragmentManager()
-                    .beginTransaction()
-                    .replace(R.id.layout, StateFragment.newInstance(curTabNr))
-                    .commit();
-        });
-        // get the list of history files
-        getHistoryFiles();
+        btnView.setOnClickListener(v -> getParentFragmentManager()
+                .beginTransaction()
+                .replace(R.id.layout, StateFragment.newInstance(curTabNr))
+                .commit());
+    }
+
+    @Override
+    public void onDestroy() {
+        if (svc != null) {
+            super.onDestroy();
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_UNREGISTER_CLIENT);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+            } catch (RemoteException ignored) {
+            }
+            requireContext().unbindService(connection);
+            bound = false;
+            Log.i("TerrariaBT", "HistoryFragment: onDestroy() end");
+        } else {
+            Log.i("TerrariaBT", "HistoryFragment: why is onDestroy() called?");
+        }
     }
 
     private void getHistoryFiles() {
-//        wait = new WaitSpinner(requireContext());
-//        wait.start();
-//        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
-//        String url = "http://" + curIPAddress + "/history/state";
-//        // Request list of history files.
-//        JsonArrayRequest jsonArrayRequest = new JsonArrayRequest(Request.Method.GET, url, null,
-//                response -> {
-//                    try {
-//                        Gson gson = new Gson();
-//                        String[] hislst = gson.fromJson(response.toString(), new TypeToken<String[]>() {}.getType());
-////                        for (int i = 0; i < 30; i++) {
-////                            fileList.add(String.format("202207%02d", i + 1));
-////                        }
-//                        for (String f : hislst) {
-//                            fileList.add(f.replaceAll("state_", ""));
-//                        }
-//                        fileList.sort(Collections.reverseOrder());
-//                    } catch (JsonSyntaxException e) {
-//                        new NotificationDialog(requireContext(), "Error", "History files response contains errors:\n" + e.getMessage()).show();
-//                    }
-//                    wait.dismiss();
-//                },
-//                error -> {
-//                    if (error.getMessage() == null) {
-//                        StringWriter sw = new StringWriter();
-//                        PrintWriter pw = new PrintWriter(sw);
-//                        error.printStackTrace(pw);
-//                    } else {
-//                        new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
-//                    }
-//                    wait.dismiss();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(requireContext()).add(jsonArrayRequest);
+        if (svc != null) {
+            Log.i("TerrariaBT", "HistoryFragment: getHistoryFiles() from server");
+            try {
+                Message msg = Message.obtain(null, BTService.CMD_GET_STATE_FILES);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+            } catch (RemoteException e) {
+                // There is nothing special we need to do if the service has crashed.
+            }
+        } else {
+            Log.i("TerrariaBT", "HistoryFragment: BTService is not ready yet");
+        }
     }
 
     private void readHistoryState(String day) {
-//        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
-//        String url = "http://" + curIPAddress + "/history/state/state_" + day;
-//        // Request state history.
-//        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
-//                (Response.Listener<String>) response -> {
-//                    try {
-//                        xend = 0;
-//                        /*  0123456789012345678
-//                            2021-08-01 05:00:00 start
-//                            2021-08-01 06:00:00 mist 1 -1
-//                            2021-08-01 06:00:00 fan_in 0
-//                            2021-08-01 06:00:00 fan_out 0
-//                        */
-//                        String[] lines = response.split("\n");
-//                        for (String line : lines) {
-//                            String[] parts = line.split(" ");
-//                            if (parts[2].equalsIgnoreCase("start")) {
-//                                xstart = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
-//                                String[] tm = parts[1].split(":");
-//                                hmstart = Integer.parseInt(tm[0]) * 3600 + Integer.parseInt(tm[1]) * 60 + Integer.parseInt(tm[2]);
-//                            } else if (parts[2].equalsIgnoreCase("stop")) {
-//                                xend = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
-//                            } else {
-//                                int tm = (int)((Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000) - xstart);
-//                                String dev = parts[2];
-//                                boolean on = parts[3].equalsIgnoreCase("1");
-//                                history_state.computeIfAbsent(dev, k -> new HashMap<>());
-//                                Objects.requireNonNull(history_state.get(dev)).put(tm, on);
-//                            }
-//                            if (xend == 0) {
-//                                xend = xstart + 24 * 60 * 60;
-//                            }
-//                        }
-//                        drawChart();
-//                    } catch (JsonSyntaxException | ParseException e) {
-//                        new NotificationDialog(requireContext(), "Error", "History state response contains errors:\n" + e.getMessage()).show();
-//                    }
-//                },
-//                (Response.ErrorListener) error -> {
-//                    if (error.getMessage() == null) {
-//                        StringWriter sw = new StringWriter();
-//                        PrintWriter pw = new PrintWriter(sw);
-//                        error.printStackTrace(pw);
-//                    } else {
-//                        new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
-//                    }
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(requireContext()).add(stringRequest);
+        if (svc != null) {
+            Log.i("TerrariaBT", "HistoryFragment: readHistoryState() from server");
+            try {
+                Message msg = Message.obtain(null, BTService.CMD_GET_STATE_FILE);
+                msg.replyTo = mMessenger;
+                msg.obj = "state_" + day;
+                svc.send(msg);
+            } catch (RemoteException e) {
+                // There is nothing special we need to do if the service has crashed.
+            }
+        } else {
+            Log.i("TerrariaBT", "HistoryFragment: BTService is not ready yet");
+        }
     }
 
     private void drawChart() {
@@ -255,7 +377,7 @@ public class HistoryFragment extends Fragment {
             public String getAxisLabel(float value, AxisBase axis) {
                 int hr = (int)value / 3600;
                 int mn = ((int)value - (hr * 3600)) / 60;
-                return String.format("%02d:%02d", (hr >= 24 ? hr -24 : hr), mn);
+                return String.format(Locale.US, "%02d:%02d", (hr >= 24 ? hr -24 : hr), mn);
             }
         });
         // Y axis
@@ -301,56 +423,19 @@ public class HistoryFragment extends Fragment {
     }
 
     private void readHistoryTemperture(String day) {
-//        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
-//        String url = "http://" + curIPAddress + "/history/temperature/temp_" + day;
-//        // Request state history.
-//        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
-//                (Response.Listener<String>) response -> {
-//                    try {
-//                        xend = 0;
-//                        /*
-//                            2021-08-01 05:00:00 r=21 t=21
-//                            2021-08-01 06:00:00 r=21 t=21
-//                            2021-08-01 06:45:00 r=21 t=21
-//                         */
-//                        String[] lines = response.split("\n");
-//                        for (String line : lines) {
-//                            String[] parts = line.split(" ");
-//                            if (parts[2].equalsIgnoreCase("start")) {
-//                                xstart = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
-//                                String[] tm = parts[1].split(":");
-//                                hmstart = Integer.parseInt(tm[0]) * 3600 + Integer.parseInt(tm[1]) * 60 + Integer.parseInt(tm[2]);
-//                            } else if (parts[2].equalsIgnoreCase("stop")) {
-//                                xend = Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000;
-//                            } else {
-//                                int tm = (int)((Objects.requireNonNull(dtfmt.parse(parts[0] + " " + parts[1])).getTime() / 1000) - xstart);
-//                                String room = parts[2].split("=")[1];
-//                                int terr = Integer.parseInt(parts[3].split("=")[1]);
-//                                history_temp.put(tm, terr);
-//                            }
-//                            if (xend == 0) {
-//                                xend = xstart + 24 * 60 * 60;
-//                            }
-//                        }
-//                        drawTerrTempLine(0xFFF43F1A);
-//                        wait.dismiss();
-//                    } catch (JsonSyntaxException | ParseException e) {
-//                        new NotificationDialog(requireContext(), "Error", "History response contains errors:\n" + e.getMessage()).show();
-//                    }
-//                },
-//                (Response.ErrorListener) error -> {
-//                    if (error.getMessage() == null) {
-//                        StringWriter sw = new StringWriter();
-//                        PrintWriter pw = new PrintWriter(sw);
-//                        error.printStackTrace(pw);
-//                    } else {
-//                        new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
-//                    }
-//                    wait.dismiss();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(requireContext()).add(stringRequest);
+        if (svc != null) {
+            Log.i("TerrariaBT", "HistoryFragment: readHistoryTemperture() from server");
+            try {
+                Message msg = Message.obtain(null, BTService.CMD_GET_TEMP_FILE);
+                msg.replyTo = mMessenger;
+                msg.obj = "temp_" + day;
+                svc.send(msg);
+            } catch (RemoteException e) {
+                // There is nothing special we need to do if the service has crashed.
+            }
+        } else {
+            Log.i("TerrariaBT", "HistoryFragment: BTService is not ready yet");
+        }
     }
 
     public void drawTerrTempLine(int color) {
@@ -358,7 +443,7 @@ public class HistoryFragment extends Fragment {
         List<Entry> entries = new ArrayList<>();
         for (int i = 0; i < (xend - xstart); i++) {
             if (history_temp.get(i) != null) {
-                curTemp = Integer.valueOf(history_temp.get(i));
+                curTemp = history_temp.get(i);
             }
             entries.add(new Entry(i + hmstart, (curTemp - 15f) / 20f));
         }

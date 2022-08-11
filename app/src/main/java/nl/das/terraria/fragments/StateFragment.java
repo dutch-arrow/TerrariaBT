@@ -45,15 +45,13 @@ import nl.das.terraria.json.Sensor;
 import nl.das.terraria.json.Sensors;
 import nl.das.terraria.json.State;
 import nl.das.terraria.json.States;
+import nl.das.terraria.json.Error;
 
 public class StateFragment extends Fragment {
 
     private int tabnr;
-    private boolean trace = false;
-    private String curIPAddress;
     private Sensors sensors;
     private WaitSpinner wait;
-    private boolean bound;
     private final ArrayList<Integer> supportedMessages = new ArrayList<>();
     private Messenger svc;
 
@@ -66,6 +64,12 @@ public class StateFragment extends Fragment {
     public StateFragment() {
         supportedMessages.add(BTService.CMD_GET_SENSORS);
         supportedMessages.add(BTService.CMD_GET_STATE);
+        supportedMessages.add(BTService.CMD_SET_DEVICE_ON);
+        supportedMessages.add(BTService.CMD_SET_DEVICE_ON_FOR);
+        supportedMessages.add(BTService.CMD_SET_DEVICE_OFF);
+        supportedMessages.add(BTService.CMD_SET_DEVICE_MANUAL_ON);
+        supportedMessages.add(BTService.CMD_SET_DEVICE_MANUAL_OFF);
+        supportedMessages.add(BTService.CMD_SET_LIFECYCLE_COUNTER);
     }
 
     public static StateFragment newInstance(int tabnr) {
@@ -80,7 +84,7 @@ public class StateFragment extends Fragment {
     /**
      * Service connection that connects to the BTService.
      */
-    private ServiceConnection connection = new ServiceConnection() {
+    private final ServiceConnection connection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             // This is called when the connection with the service has been
@@ -89,7 +93,6 @@ public class StateFragment extends Fragment {
             // service using a Messenger, so here we get a client-side
             // representation of that from the raw IBinder object.
             svc = new Messenger(service);
-            bound = true;
             // We want to monitor the service for as long as we are
             // connected to it.
             try {
@@ -114,7 +117,6 @@ public class StateFragment extends Fragment {
             // This is called when the connection with the service has been
             // unexpectedly disconnected -- that is, its process crashed.
             svc = null;
-            bound = false;
         }
     };
 
@@ -140,8 +142,27 @@ public class StateFragment extends Fragment {
                 case BTService.CMD_GET_STATE:
                     Log.i("TerrariaBT", "StateFragment: " + msg.obj.toString());
                     States states = new Gson().fromJson(msg.obj.toString(), States.class);
-                    trace = states.getTrace().equalsIgnoreCase("on");
                     updateState(states.getStates());
+                    wait.dismiss();
+                    break;
+                case BTService.CMD_SET_DEVICE_ON:
+                case BTService.CMD_SET_DEVICE_ON_FOR:
+                case BTService.CMD_SET_DEVICE_OFF:
+                case BTService.CMD_SET_DEVICE_MANUAL_ON:
+                case BTService.CMD_SET_DEVICE_MANUAL_OFF:
+                case BTService.CMD_SET_LIFECYCLE_COUNTER:
+                    if (msg.obj != null && msg.obj.toString().length() > 0) {
+                        String errmsg;
+                        Error err = new Gson().fromJson(msg.obj.toString(), Error.class);
+                        if (err != null) {
+                            errmsg = err.getError();
+                        } else {
+                            errmsg = msg.obj.toString();
+                        }
+                        Utils.showMessage(requireContext(), requireView(), errmsg);
+                    } else {
+                        Log.i("TerrariaBT", "StateFragment: No response");
+                    }
                     wait.dismiss();
                     break;
                 default:
@@ -186,10 +207,10 @@ public class StateFragment extends Fragment {
         Log.i("TerrariaBT", "StateFragment: onViewCreated() start");
         super.onViewCreated(view, savedInstanceState);
         wait = new WaitSpinner(requireActivity());
-        bound = false;
+        // Bind to BTService
         Intent intent = new Intent(getContext(), BTService.class);
-        if(!getContext().bindService(intent, connection, 0)) {
-            Log.e("TerrariaBT","TerrariaApp: Could not bind to BTService");
+        if(!requireContext().bindService(intent, connection, 0)) {
+            Log.e("TerrariaBT","StateFragment: Could not bind to BTService");
         }
 
         Button btn = view.findViewById(R.id.trm_refreshButton);
@@ -200,16 +221,6 @@ public class StateFragment extends Fragment {
             getState();
         });
 
-        Button btnClock = view.findViewById(R.id.trm_st_btnClock);
-        btnClock.setOnClickListener(v -> {
-            Log.i("TerrariaBT", "StateFragment: set Clock");
-            // Create an instance of the dialog fragment and show it
-            ClockDialogFragment dlgClock = ClockDialogFragment.newInstance();
-            FragmentManager fm = requireActivity().getSupportFragmentManager();
-            // SETS the target fragment for use later when sending results
-            fm.setFragmentResultListener("time", this, (requestKey, result) -> result.getString("clockValue"));
-            dlgClock.show(fm, "ClockDialogFragment");
-        });
         // walk through all device views
         int vix = 0;
         for (Device d :  TerrariaApp.configs[tabnr - 1].getDevices()) {
@@ -230,6 +241,7 @@ public class StateFragment extends Fragment {
                 SwitchCompat sc = (SwitchCompat) cv;
                 if (sc.isChecked()) {
                     switchDevice(d.getDevice(), true);
+                    state.setText(R.string.noendtime);
                 } else {
                     switchDevice(d.getDevice(), false);
                     state.setText("");
@@ -245,7 +257,7 @@ public class StateFragment extends Fragment {
                     FragmentManager fm = requireActivity().getSupportFragmentManager();
                     // SETS the target fragment for use later when sending results
                     fm.setFragmentResultListener("reset", this, (requestKey, result) -> {
-                        tvwHours.setText(result.getInt("hours"));
+                        tvwHours.setText(String.valueOf(result.getInt("hours")));
                         onResetHoursSave(d.getDevice(), result.getInt("hours"));
                     });
                     dlgReset.show(fm, "ResetHoursDialogFragment");
@@ -264,58 +276,66 @@ public class StateFragment extends Fragment {
 
     @Override
     public void onDestroy() {
-        super.onDestroy();
-        try {
-            Message msg = Message.obtain(null, BTService.MSG_UNREGISTER_CLIENT);
-            msg.replyTo = mMessenger;
-            svc.send(msg);
-        } catch (RemoteException e) { }
-        getContext().unbindService(connection);
-        bound = false;
-        Log.i("TerrariaBT", "StateFragment: onDestroy() end");
+        if (svc != null) {
+            super.onDestroy();
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_UNREGISTER_CLIENT);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+            } catch (RemoteException ignored) {
+            }
+            requireContext().unbindService(connection);
+            Log.i("TerrariaBT", "StateFragment: onDestroy() end");
+        } else {
+            Log.i("TerrariaBT", "StateFragment: why is onDestroy() called?");
+        }
     }
 
 
     private void switchDevice(String device, boolean yes) {
-//        final WaitSpinner wait = new WaitSpinner(requireActivity());
-//        wait.start();
-//        String url = "http://" + curIPAddress + "/device/" + device + (yes ? "/on" : "/off");
-//        Log.i("TerrariaBT","Execute PUT request " + url);
-//        // Switch device off.
-//        StringRequest jsonArrayRequest = new StringRequest(Request.Method.PUT, url,
-//                response1 -> {
-//                    Log.i("TerrariaBT", "Switch device " + device + (yes ? " on" : " off"));
-//                    wait.dismiss();
-//                },
-//                error -> {
-//                    wait.dismiss();
-//                    Log.i("TerrariaBT","Error " + error.getMessage());
-//                    new NotificationDialog(getContext(), "Error", "Kontakt met Terrarium Control Unit verloren.").show();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(getContext()).add(jsonArrayRequest);
+        wait.start();
+        if (svc != null) {
+            try {
+                Message msg;
+                if (yes) {
+                    Log.i("TerrariaBT", "StateFragment: switchDevice() on");
+                    msg = Message.obtain(null, BTService.CMD_SET_DEVICE_ON);
+                } else {
+                    Log.i("TerrariaBT", "StateFragment: switchDevice() off");
+                    msg = Message.obtain(null, BTService.CMD_SET_DEVICE_OFF);
+                }
+                msg.replyTo = mMessenger;
+                msg.obj = device;
+                svc.send(msg);
+            } catch (RemoteException e) {
+                // There is nothing special we need to do if the service has crashed.
+            }
+        } else {
+            Log.i("TerrariaBT", "StateFragment: BTService is not ready yet");
+        }
     }
 
     private void switchManual(String device, boolean yes) {
-//        final WaitSpinner wait = new WaitSpinner(requireActivity());
-//        wait.start();
-//        String url = "http://" + curIPAddress + "/device/" + device + (yes ? "/manual" : "/auto");
-//        Log.i("TerrariaBT","Execute PUT request " + url);
-//        // Switch device off.
-//        StringRequest jsonArrayRequest = new StringRequest(Request.Method.PUT, url,
-//                response1 -> {
-//                    Log.i("TerrariaBT", "Switch device " + device + (yes ? " to manual" : " to auto"));
-//                    wait.dismiss();
-//                },
-//                error -> {
-//                    wait.dismiss();
-//                    Log.i("TerrariaBT","Error " + error.getMessage());
-//                    new NotificationDialog(getContext(), "Error", "Kontakt met Terrarium Control Unit verloren.").show();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(getContext()).add(jsonArrayRequest);
+        wait.start();
+        if (svc != null) {
+            try {
+                Message msg;
+                if (yes) {
+                    Log.i("TerrariaBT", "StateFragment: switchManual() on");
+                    msg = Message.obtain(null, BTService.CMD_SET_DEVICE_MANUAL_ON);
+                } else {
+                    Log.i("TerrariaBT", "StateFragment: switchManual() off");
+                    msg = Message.obtain(null, BTService.CMD_SET_DEVICE_MANUAL_OFF);
+                }
+                msg.replyTo = mMessenger;
+                msg.obj = device;
+                svc.send(msg);
+            } catch (RemoteException e) {
+                // There is nothing special we need to do if the service has crashed.
+            }
+        } else {
+            Log.i("TerrariaBT", "StateFragment: BTService is not ready yet");
+        }
     }
 
     private void getSensors() {
@@ -329,7 +349,7 @@ public class StateFragment extends Fragment {
                 sensors = gson.fromJson(response, Sensors.class);
                 updateSensors();
             } catch (JsonSyntaxException | IOException e) {
-                Utils.showMessage(getContext(), TerrariaApp.appView, "StateFragment: Sensors response contains errors:\n" + e.getMessage());
+                Utils.showMessage(requireContext(), getView(), "StateFragment: Sensors response contains errors:\n" + e.getMessage());
             }
 
         } else {
@@ -375,7 +395,7 @@ public class StateFragment extends Fragment {
                 updateState(states);
                 wait.dismiss();
             } catch (JsonSyntaxException | IOException e) {
-                Utils.showMessage(getContext(), TerrariaApp.appView, "StateFragment: State response contains errors:\n" + e.getMessage());
+                Utils.showMessage(requireContext(), getView(), "StateFragment: State response contains errors:\n" + e.getMessage());
             }
         } else {
             if (svc != null) {
@@ -418,24 +438,21 @@ public class StateFragment extends Fragment {
     }
 
     public void onResetHoursSave(String device, int hoursOn) {
-//        final WaitSpinner wait = new WaitSpinner(requireActivity());
-//        wait.start();
-//        String url = "http://" + curIPAddress + "/counter/" + device  + "/" + hoursOn;
-//        Log.i("TerrariaBT","Execute POST request " + url);
-//        // Set counter.
-//        StringRequest jsonObjectRequest = new StringRequest(Request.Method.POST, url,
-//                response -> {
-//                    Log.i("TerrariaBT", "Set lifecycle counter of " + device + " to " + hoursOn);
-//                    wait.dismiss();
-//                },
-//                error -> {
-//                    wait.dismiss();
-//                    Log.i("Terrarium","Error " + error.getMessage());
-//                    new NotificationDialog(getContext(), "Error", "Kontakt met Terrarium Control Unit verloren.").show();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(getContext()).add(jsonObjectRequest);
+        wait.start();
+        if (svc != null) {
+            try {
+                Log.i("TerrariaBT", "StateFragment: onResetHoursSave()");
+                Message msg = Message.obtain(null, BTService.CMD_SET_LIFECYCLE_COUNTER);
+                msg.replyTo = mMessenger;
+                msg.obj = device;
+                msg.arg1 = hoursOn;
+                svc.send(msg);
+            } catch (RemoteException e) {
+                // There is nothing special we need to do if the service has crashed.
+            }
+        } else {
+            Log.i("TerrariaBT", "StateFragment: BTService is not ready yet");
+        }
     }
 
     private String translateEndTime(String endTime) {
@@ -452,47 +469,5 @@ public class StateFragment extends Fragment {
                 return endTime;
             }
         }
-    }
-
-    public void record(boolean start) {
-//        final WaitSpinner wait = new WaitSpinner(requireActivity());
-//        wait.start();
-//        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
-//        String url = "http://" + curIPAddress + "/trace/" + (start ? "on" : "off");
-//        Log.i("TerrariaBT","Execute POST request " + url);
-//        VoidRequest voidRequest = new VoidRequest(Request.Method.POST, url, null,
-//                (Response.Listener<Void>) response1 -> {
-//                    Log.i("TerrariaBT", "Recording " + (start ? "started..." : "stopped"));
-//                    wait.dismiss();
-//                },
-//                (Response.ErrorListener) error -> {
-//                    wait.dismiss();
-//                    Log.i("TerrariaBT","Error " + error.getMessage());
-//                    new NotificationDialog(getContext(), "Error", "Kontakt met Terrarium Control Unit verloren.").show();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(getContext()).add(voidRequest);
-    }
-
-    public void viewRecording(String type) { // type = "state" or "temperature"
-//        final WaitSpinner wait = new WaitSpinner(requireActivity());
-//        wait.start();
-//        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(requireContext());
-//        String url = "http://" + curIPAddress + "/history/" + type;
-//        Log.i("TerrariaBT","Execute GET request " + url);
-//        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
-//                (Response.Listener<String>) response1 -> {
-//                    Log.i("TerrariaBT", "Get the recording of " + type);
-//                    wait.dismiss();
-//                },
-//                (Response.ErrorListener) error -> {
-//                    wait.dismiss();
-//                    Log.i("TerrariaBT","Error " + error.getMessage());
-//                    new NotificationDialog(getContext(), "Error", "Kontakt met Terrarium Control Unit verloren.").show();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(getContext()).add(stringRequest);
     }
 }

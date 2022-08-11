@@ -1,7 +1,16 @@
 package nl.das.terraria.fragments;
 
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Message;
+import android.os.Messenger;
+import android.os.RemoteException;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -30,17 +39,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import nl.das.terraria.BTService;
 import nl.das.terraria.R;
 import nl.das.terraria.TerrariaApp;
+import nl.das.terraria.Utils;
 import nl.das.terraria.dialogs.WaitSpinner;
 import nl.das.terraria.json.Action;
 import nl.das.terraria.json.Device;
+import nl.das.terraria.json.Error;
 import nl.das.terraria.json.Ruleset;
 
 public class RulesetFragment extends Fragment {
 
     private int tabnr;
-    private String curIPAddress;
+    private final ArrayList<Integer> supportedMessages = new ArrayList<>();
+    private Messenger svc;
     private InputMethodManager imm;
     private Ruleset ruleset;
     private int currentRsNr;
@@ -71,7 +84,8 @@ public class RulesetFragment extends Fragment {
     private WaitSpinner wait;
 
     public RulesetFragment() {
-        // Required empty public constructor
+        supportedMessages.add(BTService.CMD_GET_RULESET);
+        supportedMessages.add(BTService.CMD_SET_RULESET);
     }
 
     public static RulesetFragment newInstance(int tabnr, int rulesetNr) {
@@ -81,6 +95,87 @@ public class RulesetFragment extends Fragment {
         args.putInt("rulesetnr", rulesetNr);
         fragment.setArguments(args);
         return fragment;
+    }
+    /**
+     * Service connection that connects to the BTService.
+     */
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            // This is called when the connection with the service has been
+            // established, giving us the object we can use to
+            // interact with the service.  We are communicating with the
+            // service using a Messenger, so here we get a client-side
+            // representation of that from the raw IBinder object.
+            svc = new Messenger(service);
+            // We want to monitor the service for as long as we are
+            // connected to it.
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_REGISTER_CLIENT);
+                Bundle bdl = new Bundle();
+                bdl.putIntegerArrayList("commands", supportedMessages);
+                msg.setData(bdl);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+                wait.start();
+                getRuleset();
+            } catch (RemoteException e) {
+                // In this case the service has crashed before we could even
+                // do anything with it; we can count on soon being
+                // disconnected (and then reconnected if it can be restarted)
+                // so there is no need to do anything here.
+            }
+        }
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            // This is called when the connection with the service has been
+            // unexpectedly disconnected -- that is, its process crashed.
+            svc = null;
+        }
+    };
+
+    /**
+     * Target we publish for clients to send messages to IncomingHandler.
+     */
+    final Messenger mMessenger = new Messenger(new IncomingHandler());
+
+    /**
+     * Handler of incoming messages from service.
+     */
+    class IncomingHandler extends Handler {
+        @Override
+        public void handleMessage(Message msg) {
+            super.handleMessage(msg);
+            Log.i("TerrariaBT","RulesetFragment: handleMessage() for message " + msg.what );
+            switch (msg.what) {
+                case BTService.CMD_GET_RULESET:
+                    Log.i("TerrariaBT", "RulesetFragment: " + msg.obj.toString());
+                    ruleset = new Gson().fromJson(msg.obj.toString(), Ruleset.class);
+                    updateRuleset();
+                    currentRlNr = 0;
+                    updateRule();
+                    currentRlNr = 1;
+                    updateRule();
+                    wait.dismiss();
+                    break;
+                case BTService.CMD_SET_RULESET:
+                    if (msg.obj != null && msg.obj.toString().length() > 0) {
+                        String errmsg;
+                        Error err = new Gson().fromJson(msg.obj.toString(), Error.class);
+                        if (err != null) {
+                            errmsg = err.getError();
+                        } else {
+                            errmsg = msg.obj.toString();
+                        }
+                        Utils.showMessage(requireContext(), requireView(), errmsg);
+                    } else {
+                        Log.i("TerrariaBT", "RulesetFragment: No response");
+                    }
+                    wait.dismiss();
+                    break;
+                default:
+            }
+        }
     }
 
     @Override
@@ -237,17 +332,17 @@ public class RulesetFragment extends Fragment {
 
         for (int a = 0; a < (NR_OF_ACTIONS * 2); a++) {
             int fa = a;
-            int resId = getResources().getIdentifier("rs_spnDevice_" + (a + 1), "id", getContext().getPackageName());
+            int resId = getResources().getIdentifier("rs_spnDevice_" + (a + 1), "id", requireContext().getPackageName());
             spnDevice[a] = view.findViewById(resId);
-            resId = getResources().getIdentifier("rs_rbgPeriod_" + (a + 1), "id", getContext().getPackageName());
+            resId = getResources().getIdentifier("rs_rbgPeriod_" + (a + 1), "id", requireContext().getPackageName());
             rbgPeriod[a] = view.findViewById(resId);
-            resId = getResources().getIdentifier("rs_rbIdeal_" + (a + 1), "id", getContext().getPackageName());
+            resId = getResources().getIdentifier("rs_rbIdeal_" + (a + 1), "id", requireContext().getPackageName());
             rbnActionIdeal[a] = view.findViewById(resId);
-            resId = getResources().getIdentifier("rs_rbPeriod_" + (a + 1), "id", getContext().getPackageName());
+            resId = getResources().getIdentifier("rs_rbPeriod_" + (a + 1), "id", requireContext().getPackageName());
             rbnActionPeriod[a] = view.findViewById(resId);
-            resId = getResources().getIdentifier("rs_edtPeriod_" + (a + 1), "id", getContext().getPackageName());
+            resId = getResources().getIdentifier("rs_edtPeriod_" + (a + 1), "id", requireContext().getPackageName());
             edtActionPeriod[a] = view.findViewById(resId);
-            resId = getResources().getIdentifier("rs_lblSeconds_" + (a + 1), "id", getContext().getPackageName());
+            resId = getResources().getIdentifier("rs_lblSeconds_" + (a + 1), "id", requireContext().getPackageName());
             tvwSeconds[a] = view.findViewById(resId);
 
             spnDevice[a].setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -349,7 +444,12 @@ public class RulesetFragment extends Fragment {
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
-        curIPAddress = requireContext().getSharedPreferences("TerrariaApp", 0).getString("terrarium" + tabnr + "_ip_address", "");
+        wait = new WaitSpinner(requireActivity());
+        // Bind to BTService
+        Intent intent = new Intent(requireContext(), BTService.class);
+        if(!requireContext().bindService(intent, connection, 0)) {
+            Log.e("TerrariaBT","RulesetFragment: Could not bind to BTService");
+        }
 
         spn_items = new ArrayList<>();
         spn_items.add("");
@@ -362,23 +462,39 @@ public class RulesetFragment extends Fragment {
                 i++;
             }
         }
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(getContext(), R.layout.spinner_list, R.id.rs_spnItem, spn_items.toArray(new String[0]));
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(requireContext(), R.layout.spinner_list, R.id.rs_spnItem, spn_items.toArray(new String[0]));
         for (int a = 0; a < (NR_OF_ACTIONS * 2); a++) {
             spnDevice[a].setAdapter(adapter);
         }
         getRuleset();
     }
 
+    @Override
+    public void onDestroy() {
+        if (svc != null) {
+            super.onDestroy();
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_UNREGISTER_CLIENT);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+            } catch (RemoteException ignored) {
+            }
+            requireContext().unbindService(connection);
+            Log.i("TerrariaBT", "RulesetFragment: onDestroy() end");
+        } else {
+            Log.i("TerrariaBT", "RulesetFragment: why is onDestroy() called?");
+        }
+    }
+
     private void getRuleset() {
-        wait = new WaitSpinner(requireContext());
-        wait.start();
         if (TerrariaApp.MOCK[tabnr - 1]) {
+            Log.i("TerrariaBT", "RulesetFragment: getRuleset() from file (mock)");
             try {
                 Gson gson = new Gson();
                 String response = new BufferedReader(
                         new InputStreamReader(getResources().getAssets().open("ruleset" + currentRsNr + "_" + TerrariaApp.configs[tabnr - 1].getMockPostfix() + ".json")))
                         .lines().collect(Collectors.joining("\n"));
-                ruleset = gson.fromJson(response.toString(), Ruleset.class);
+                ruleset = gson.fromJson(response, Ruleset.class);
                 updateRuleset();
                 currentRlNr = 0;
                 updateRule();
@@ -389,36 +505,19 @@ public class RulesetFragment extends Fragment {
                 wait.dismiss();
             }
         } else {
-//            String url = "http://" + curIPAddress + "/ruleset/" + currentRsNr;
-//            // Request sensor readings.
-//            JsonObjectRequest jsonObjectRequest = new JsonObjectRequest(Request.Method.GET, url, null,
-//                    response1 -> {
-//                        Gson gson = new Gson();
-//                        try {
-//                            ruleset = gson.fromJson(response1.toString(), Ruleset.class);
-//                            updateRuleset();
-//                            currentRlNr = 0;
-//                            updateRule();
-//                            currentRlNr = 1;
-//                            updateRule();
-//                            wait.dismiss();
-//                        } catch (JsonSyntaxException e) {
-//                            new NotificationDialog(requireContext(), "Error", "Timers response contains errors:\n" + e.getMessage()).show();
-//                        }
-//                    },
-//                    error -> {
-//                        if (error.getMessage() == null) {
-//                            StringWriter sw = new StringWriter();
-//                            PrintWriter pw = new PrintWriter(sw);
-//                            error.printStackTrace(pw);
-//                        } else {
-//                            new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
-//                        }
-//                        wait.dismiss();
-//                    }
-//            );
-//            // Add the request to the RequestQueue.
-//            RequestQueueSingleton.getInstance(requireContext()).add(jsonObjectRequest);
+            if (svc != null) {
+                Log.i("TerrariaBT", "RulesetFragment: getRuleset() from server");
+                try {
+                    Message msg = Message.obtain(null, BTService.CMD_GET_RULESET);
+                    msg.replyTo = mMessenger;
+                    msg.arg1 = currentRsNr;
+                    svc.send(msg);
+                } catch (RemoteException e) {
+                    // There is nothing special we need to do if the service has crashed.
+                }
+            } else {
+                Log.i("TerrariaBT", "RulesetFragment: BTService is not ready yet");
+            }
         }
     }
 
@@ -437,15 +536,15 @@ public class RulesetFragment extends Fragment {
             to = ruleset.getTo().replace(':', '.');
         }
         edtTo.setText(to);
-        edtIdeal.setText(ruleset.getTempIdeal() + "");
+        edtIdeal.setText(String.valueOf(ruleset.getTempIdeal()));
     }
 
     private void updateRule() {
         int value = ruleset.getRules().get(currentRlNr).getValue();
         if (value < 0) {
-            edtValueBelow.setText(-value + "");
+            edtValueBelow.setText(String.valueOf(-value));
         } else if (value > 0) {
-            edtValueAbove.setText(value + "");
+            edtValueAbove.setText(String.valueOf(value));
         }
         for (int i = 0; i < NR_OF_ACTIONS; i++) {
             Action a = ruleset.getRules().get(currentRlNr).getActions().get(i);
@@ -468,7 +567,7 @@ public class RulesetFragment extends Fragment {
             } else if (a.getOnPeriod() > 0) {
                 rbnActionPeriod[nr].setChecked(true);
                 rbnActionIdeal[nr].setChecked(false);
-                edtActionPeriod[nr].setText(a.getOnPeriod() + "");
+                edtActionPeriod[nr].setText(String.valueOf(a.getOnPeriod()));
                 edtActionPeriod[nr].setEnabled(true);
                 tvwSeconds[nr].setTextColor(getResources().getColor(R.color.black, null));
             } else {
@@ -484,23 +583,21 @@ public class RulesetFragment extends Fragment {
     }
 
     private void saveRuleset() {
-//        wait = new WaitSpinner(requireContext());
-//        wait.start();
-//        String url = "http://" + curIPAddress + "/ruleset/" + currentRsNr;
-//        Gson gson = new Gson();
-//        ruleset.setTerrarium(1);
-//        String json = gson.toJson(ruleset);
-//        VoidRequest req = new VoidRequest(Request.Method.PUT, url, json,
-//                response -> {
-//                    wait.dismiss();
-//                },
-//                error -> {
-//                    wait.dismiss();
-//                    new NotificationDialog(requireActivity(), "Error", "Kontakt met Control Unit verloren.").show();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(requireContext()).add(req);
+        ruleset.setTerrarium(1);
+        if (svc != null) {
+            try {
+                Log.i("TerrariaBT", "RulesetFragment: saveTimers()");
+                Message msg = Message.obtain(null, BTService.CMD_SET_RULESET);
+                msg.replyTo = mMessenger;
+                msg.arg1 = currentRsNr;
+                msg.obj = new Gson().toJson(ruleset);
+                svc.send(msg);
+            } catch (RemoteException e) {
+                // There is nothing special we need to do if the service has crashed.
+            }
+        } else {
+            Log.i("TerrariaBT", "RulesetFragment: BTService is not ready yet");
+        }
     }
 
     private boolean checkTime(EditText field) {

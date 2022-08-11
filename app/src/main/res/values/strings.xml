@@ -2,6 +2,7 @@
     <string name="app_name">TerrariaBT</string>
     <string name="percent">%</string>
     <string name="degrees">\u2103</string>
+    <string name="noendtime">geen eindtijd</string>
     <string name="seconds">seconden</string>
     <string name="minutes">minuten</string>
     <string name="btnSave">Opslaan</string>
@@ -29,9 +30,6 @@
     <string name="lblManual">handmatig</string>
     <string name="st_btnRefresh">Vernieuwen</string>
     <string name="st_tvwClock">Klok:</string>
-    <string name="dlg_tvwClockTitle">Stel de datum en tijd handmatig in</string>
-    <string name="dlg_tvwClock1">Geef datum als volgt op: dd/mm/yyyy hh:mm</string>
-    <string name="dlg_tvwClock2">Bv. 02/04/2020 14:25 voor 2 April 2020</string>
     <string name="dlg_tvwResetHours1">Geef het totaal aantal branduren op</string>
     <string name="st_btnManual">Stel in</string>
     <string name="st_tvwTerrarium">Terrarium:</string>

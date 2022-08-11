@@ -8,7 +8,6 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothSocket;
 import android.content.Context;
 import android.content.Intent;
-import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Message;
@@ -18,17 +17,15 @@ import android.util.Log;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -41,27 +38,54 @@ public class BTService extends Service {
     public static final int CMD_GET_PROPERTIES = 3;
     public static final int CMD_GET_SENSORS = 4;
     public static final int CMD_GET_STATE = 5;
-    public static final int CMD_GET_TIMERS = 6;
+    public static final int CMD_SET_DEVICE_ON = 6;
+    public static final int CMD_SET_DEVICE_ON_FOR = 7;
+    public static final int CMD_SET_DEVICE_OFF = 8;
+    public static final int CMD_SET_DEVICE_MANUAL_ON = 9;
+    public static final int CMD_SET_DEVICE_MANUAL_OFF = 10;
+    public static final int CMD_SET_LIFECYCLE_COUNTER = 11;
+    public static final int CMD_GET_TIMERS = 12;
+    public static final int CMD_SET_TIMERS = 13;
+    public static final int CMD_GET_RULESET = 14;
+    public static final int CMD_SET_RULESET = 15;
+    public static final int CMD_GET_SPRAYERRULE = 16;
+    public static final int CMD_SET_SPRAYERRULE = 17;
+    public static final int CMD_GET_TEMP_FILES = 18;
+    public static final int CMD_GET_STATE_FILES = 19;
+    public static final int CMD_GET_TEMP_FILE = 20;
+    public static final int CMD_GET_STATE_FILE = 21;
 
     enum Commands {
         getProperties(CMD_GET_PROPERTIES),
         getSensors(CMD_GET_SENSORS),
         getState(CMD_GET_STATE),
-        getTimers(CMD_GET_TIMERS);
+        setDeviceOn(CMD_SET_DEVICE_ON),
+        setDeviceOnFor(CMD_SET_DEVICE_ON_FOR),
+        setDeviceOff(CMD_SET_DEVICE_OFF),
+        setDeviceManualOn(CMD_SET_DEVICE_MANUAL_ON),
+        setDeviceManualOff(CMD_SET_DEVICE_MANUAL_OFF),
+        setLifecycleCounter(CMD_SET_LIFECYCLE_COUNTER),
+        getTimersForDevice(CMD_GET_TIMERS),
+        replaceTimers(CMD_SET_TIMERS),
+        getRuleset(CMD_GET_RULESET),
+        saveRuleset(CMD_SET_RULESET),
+        getSprayerRule(CMD_GET_SPRAYERRULE),
+        setSprayerRule(CMD_SET_SPRAYERRULE),
+        getTempTracefiles(CMD_GET_TEMP_FILES),
+        getStateTracefiles(CMD_GET_STATE_FILES),
+        getTemperatureFile(CMD_GET_TEMP_FILE),
+        getStateFile(CMD_GET_STATE_FILE);
 
-        private int value;
-        private Commands(int value) {
+        private final int value;
+        Commands(int value) {
             this.value = value;
         }
     }
     // Bluetooth stuff
-    private List<BluetoothDevice> pairedDevices = new ArrayList<>();
-    private BluetoothDevice connectedDevice;
-    private String curUuid;
     private BluetoothSocket mmSocket;
     private static ConnectedThread connectedThread;
     /** Keeps track of all current registered clients. */
-    private static Map<Integer, Set<Messenger>> clients = new HashMap<>();
+    private static final Map<Integer, Set<Messenger>> clients = new HashMap<>();
 
     @SuppressLint("MissingPermission")
     @Override
@@ -71,8 +95,8 @@ public class BTService extends Service {
         - create a socket connected to the service
         - create a thread that monitors the incoming bytes (response from server)
          */
-        curUuid = intent.getStringExtra("UUID");
-        connectedDevice = intent.getParcelableExtra("Device");
+        String curUuid = intent.getStringExtra("UUID");
+        BluetoothDevice connectedDevice = intent.getParcelableExtra("Device");
         Log.i("TerrariaBT","BTService: Start: device=" + connectedDevice.getName() + " uuid=" + curUuid);
         try {
             // Get a BluetoothSocket to connect with the given BluetoothDevice.
@@ -93,16 +117,16 @@ public class BTService extends Service {
             }
         } catch (IOException connectException) {
             // Unable to connect; close the socket and return.
-            Log.e("TerrariaBT", "Could not connect to socket", connectException);
+            Log.e("TerrariaBT", "BTService: Could not connect to socket", connectException);
             try {
                 if (mmSocket != null) {
                     mmSocket.close();
                 }
             } catch (IOException closeException) {
-                Log.e("TerrariaBT", "Could not close the client socket", closeException);
+                Log.e("TerrariaBT", "BTService: Could not close the client socket", closeException);
             }
         }
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
     /**
@@ -116,7 +140,7 @@ public class BTService extends Service {
      */
     @Override
     public IBinder onBind(Intent intent) {
-        mMessenger = new Messenger(new IncomingHandler(this));
+        mMessenger = new Messenger(new IncomingHandler());
         return mMessenger.getBinder();
     }
 
@@ -133,24 +157,27 @@ public class BTService extends Service {
         } catch (IOException closeException) {
             Log.e("TerrariaBT", "Could not close the client socket", closeException);
         }
-        while (connectedThread.isAlive()) {}
+        while (connectedThread.isAlive()) {
+        }
     }
 
     private void sendResponse(int cmd, JsonObject obj) {
         Log.i("TerrariaBT","BTService: sendResponse() for command " + cmd);
         // Go through all Messengers that are regitered for the given command
         // and when found sent it the message.
-        for (Messenger m : clients.get(cmd)) {
+        for (Messenger m : Objects.requireNonNull(clients.get(cmd))) {
             try {
                 Message res = Message.obtain(null, cmd);
-                res.obj = new Gson().toJson(obj);
+                if (obj != null) {
+                    res.obj = new Gson().toJson(obj);
+                }
                 m.send(res);
             } catch (RemoteException e) {
                 // The client is dead.  Remove it from the list;
                 // we are going through the list from back to front
                 // so this is safe to do inside the loop.
                 for (int c : clients.keySet()) {
-                    clients.get(c).remove(m);
+                    Objects.requireNonNull(clients.get(c)).remove(m);
                 }
             }
         }
@@ -160,36 +187,129 @@ public class BTService extends Service {
      * Handler of incoming messages from clients.
      */
     static class IncomingHandler extends Handler {
-        private Context applicationContext;
-
-        IncomingHandler(Context context) {
-            applicationContext = context.getApplicationContext();
-        }
 
         @Override
         public void handleMessage(Message msg) {
             super.handleMessage(msg);
             Log.i("TerrariaBT","BTService: Received message " + msg.what);
             switch (msg.what) {
-                case MSG_REGISTER_CLIENT:
-                    Set<Integer> cmds = new HashSet(msg.getData().getIntegerArrayList("commands"));
+                case MSG_REGISTER_CLIENT: {
+                    Set<Integer> cmds = new HashSet<>(msg.getData().getIntegerArrayList("commands"));
                     register(msg.replyTo, cmds);
                     break;
-                case MSG_UNREGISTER_CLIENT:
+                }
+                case MSG_UNREGISTER_CLIENT: {
                     for (int c : clients.keySet()) {
-                        clients.get(c).remove(msg.replyTo);
+                        Objects.requireNonNull(clients.get(c)).remove(msg.replyTo);
                     }
                     break;
-                case CMD_GET_PROPERTIES:
+                }
+                case CMD_GET_PROPERTIES: {
                     connectedThread.write(new Gson().toJson(new Command(Commands.getProperties.name(), null)));
                     break;
-                case CMD_GET_SENSORS:
+                }
+                case CMD_GET_SENSORS: {
                     connectedThread.write(new Gson().toJson(new Command(Commands.getSensors.name(), null)));
                     break;
-                case CMD_GET_STATE:
+                }
+                case CMD_GET_STATE: {
                     connectedThread.write(new Gson().toJson(new Command(Commands.getState.name(), null)));
                     break;
+                }
+                case CMD_SET_DEVICE_ON: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("device", msg.obj.toString());
+                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceOn.name(), data)));
+                    break;
+                }
+                case CMD_SET_DEVICE_ON_FOR: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("device", msg.obj.toString());
+                    data.addProperty("period", msg.arg1);
+                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceOnFor.name(), data)));
+                    break;
+                }
+                case CMD_SET_DEVICE_OFF: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("device", msg.obj.toString());
+                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceOff.name(), data)));
+                    break;
+                }
+                case CMD_SET_DEVICE_MANUAL_ON: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("device", msg.obj.toString());
+                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceManualOn.name(), data)));
+                    break;
+                }
+                case CMD_SET_DEVICE_MANUAL_OFF: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("device", msg.obj.toString());
+                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceManualOff.name(), data)));
+                    break;
+                }
+                case CMD_SET_LIFECYCLE_COUNTER: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("device", msg.obj.toString());
+                    data.addProperty("hours", msg.arg1);
+                    connectedThread.write(new Gson().toJson(new Command(Commands.setLifecycleCounter.name(), data)));
+                    break;
+                }
+                case CMD_GET_TIMERS: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("device", msg.obj.toString());
+                    connectedThread.write(new Gson().toJson(new Command(Commands.getTimersForDevice.name(), data)));
+                    break;
+                }
+                case CMD_SET_TIMERS: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("timers", msg.obj.toString());
+                    connectedThread.write(new Gson().toJson(new Command(Commands.replaceTimers.name(), data)));
+                    break;
+                }
+                case CMD_GET_RULESET: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("rulesetnr", msg.arg1);
+                    connectedThread.write(new Gson().toJson(new Command(Commands.getRuleset.name(), data)));
+                    break;
+                }
+                case CMD_SET_RULESET: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("rulesetnr", msg.arg1);
+                    data.addProperty("ruleset", msg.obj.toString());
+                    connectedThread.write(new Gson().toJson(new Command(Commands.saveRuleset.name(), data)));
+                    break;
+                }
+                case CMD_GET_SPRAYERRULE: {
+                    connectedThread.write(new Gson().toJson(new Command(Commands.getSprayerRule.name(), null)));
+                    break;
+                }
+                case CMD_SET_SPRAYERRULE: {
+                    JsonObject data = JsonParser.parseString(msg.obj.toString()).getAsJsonObject();
+                    connectedThread.write(new Gson().toJson(new Command(Commands.setSprayerRule.name(), data)));
+                    break;
+                }
+                case CMD_GET_TEMP_FILES: {
+                    connectedThread.write(new Gson().toJson(new Command(Commands.getTempTracefiles.name(), null)));
+                    break;
+                }
+                case CMD_GET_TEMP_FILE: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("fname", msg.obj.toString());
+                    connectedThread.write(new Gson().toJson(new Command(Commands.getTemperatureFile.name(), data)));
+                    break;
+                }
+                case CMD_GET_STATE_FILES: {
+                    connectedThread.write(new Gson().toJson(new Command(Commands.getStateTracefiles.name(), null)));
+                    break;
+                }
+                case CMD_GET_STATE_FILE: {
+                    JsonObject data = new JsonObject();
+                    data.addProperty("fname", msg.obj.toString());
+                    connectedThread.write(new Gson().toJson(new Command(Commands.getStateFile.name(), data)));
+                    break;
+                }
                 default:
+                    Log.e("TerrariaBT", "BTService: Unimplemented command " + msg.what);
             }
         }
     }
@@ -197,9 +317,8 @@ public class BTService extends Service {
     private static void register(Messenger msgr, Set<Integer> cmds) {
         Log.i("TerrariaBT","BTService: Register client for commands " + cmds);
         for (Integer cmd : cmds) {
-            Set<Messenger> m = clients.get(cmd);
-            if (m == null) clients.put(cmd, new HashSet<>());
-            clients.get(cmd).add(msgr);
+            clients.computeIfAbsent(cmd, k -> new HashSet<>());
+            Objects.requireNonNull(clients.get(cmd)).add(msgr);
         }
     }
 
@@ -231,6 +350,7 @@ public class BTService extends Service {
                     if (b == 0x03) { //ETX character
                         String message = sb.toString();
                         Log.i("TerrariaBT","BTService: Received a message of size  " + message.length());
+//                        Log.i("TerrariaBT", message);
                         Response res = new Gson().fromJson(message, Response.class);
                         sendResponse(Commands.valueOf(res.getCommand()).value, res.getResponse());
                         sb = new StringBuilder();
@@ -250,6 +370,7 @@ public class BTService extends Service {
                 mmOutStream.write(msg.getBytes());
                 mmOutStream.write(0x03);
             } catch (IOException e) {
+                Log.e("TerrariaBT", "BTService: Write IO error: " + e.getMessage());
             }
         }
 
@@ -260,7 +381,9 @@ public class BTService extends Service {
                     mmInStream.close();
                     mmOutStream.close();
                 }
-            } catch (IOException e) { }
+            } catch (IOException e) {
+                Log.e("TerrariaBT", "BTService: Cancel IO error: " + e.getMessage());
+            }
         }
     }
 

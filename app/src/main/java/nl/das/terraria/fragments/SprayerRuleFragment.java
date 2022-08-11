@@ -1,7 +1,16 @@
 package nl.das.terraria.fragments;
 
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Message;
+import android.os.Messenger;
+import android.os.RemoteException;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -19,12 +28,17 @@ import com.google.gson.Gson;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.ArrayList;
 import java.util.stream.Collectors;
 
+import nl.das.terraria.BTService;
 import nl.das.terraria.R;
 import nl.das.terraria.TerrariaApp;
+import nl.das.terraria.Utils;
 import nl.das.terraria.dialogs.WaitSpinner;
 import nl.das.terraria.json.Action;
+import nl.das.terraria.json.Error;
+import nl.das.terraria.json.Ruleset;
 import nl.das.terraria.json.SprayerRule;
 
 public class SprayerRuleFragment extends Fragment {
@@ -40,8 +54,13 @@ public class SprayerRuleFragment extends Fragment {
     private String curIPAddress;
     private SprayerRule dryingRule;
     private int tabnr;
+    private boolean bound;
+    private final ArrayList<Integer> supportedMessages = new ArrayList<>();
+    private Messenger svc;
 
     public SprayerRuleFragment() {
+        supportedMessages.add(BTService.CMD_GET_SPRAYERRULE);
+        supportedMessages.add(BTService.CMD_SET_SPRAYERRULE);
     }
 
     public static SprayerRuleFragment newInstance(int tabnr) {
@@ -50,6 +69,85 @@ public class SprayerRuleFragment extends Fragment {
         args.putInt("tabnr", tabnr);
         fragment.setArguments(args);
         return fragment;
+    }
+    /**
+     * Service connection that connects to the BTService.
+     */
+    private ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            // This is called when the connection with the service has been
+            // established, giving us the object we can use to
+            // interact with the service.  We are communicating with the
+            // service using a Messenger, so here we get a client-side
+            // representation of that from the raw IBinder object.
+            svc = new Messenger(service);
+            bound = true;
+            // We want to monitor the service for as long as we are
+            // connected to it.
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_REGISTER_CLIENT);
+                Bundle bdl = new Bundle();
+                bdl.putIntegerArrayList("commands", supportedMessages);
+                msg.setData(bdl);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+                wait.start();
+                getDryingRule();
+            } catch (RemoteException e) {
+                // In this case the service has crashed before we could even
+                // do anything with it; we can count on soon being
+                // disconnected (and then reconnected if it can be restarted)
+                // so there is no need to do anything here.
+            }
+        }
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            // This is called when the connection with the service has been
+            // unexpectedly disconnected -- that is, its process crashed.
+            svc = null;
+            bound = false;
+        }
+    };
+
+    /**
+     * Target we publish for clients to send messages to IncomingHandler.
+     */
+    final Messenger mMessenger = new Messenger(new IncomingHandler());
+
+    /**
+     * Handler of incoming messages from service.
+     */
+    class IncomingHandler extends Handler {
+        @Override
+        public void handleMessage(Message msg) {
+            super.handleMessage(msg);
+            Log.i("TerrariaBT","SprayerRuleFragment: handleMessage() for message " + msg.what );
+            switch (msg.what) {
+                case BTService.CMD_GET_SPRAYERRULE:
+                    Log.i("TerrariaBT", "SprayerRuleFragment: " + msg.obj.toString());
+                    dryingRule = new Gson().fromJson(msg.obj.toString(), SprayerRule.class);
+                    updateDryingRule();
+                    wait.dismiss();
+                    break;
+                case BTService.CMD_SET_SPRAYERRULE:
+                    if (msg.obj != null && msg.obj.toString() != null && msg.obj.toString().length() > 0) {
+                        String errmsg = "";
+                        Error err = new Gson().fromJson(msg.obj.toString(), Error.class);
+                        if (err != null) {
+                            errmsg = err.getError();
+                        } else {
+                            errmsg = msg.obj.toString();
+                        }
+                        Utils.showMessage(getContext(), requireView(), errmsg);
+                    } else {
+                        Log.i("TerrariaBT", "SprayerRuleFragment: No response");
+                    }
+                    wait.dismiss();
+                    break;
+                default:
+            }
+        }
     }
 
     @Override
@@ -157,14 +255,36 @@ public class SprayerRuleFragment extends Fragment {
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
-        curIPAddress = requireContext().getSharedPreferences("TerrariaApp", 0).getString("terrarium" + tabnr + "_ip_address", "");
-        getDryingRule();
+        wait = new WaitSpinner(requireActivity());
+        // Bind to BTService
+        bound = false;
+        Intent intent = new Intent(getContext(), BTService.class);
+        if(!getContext().bindService(intent, connection, 0)) {
+            Log.e("TerrariaBT","SprayerRuleFragment: Could not bind to BTService");
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        if (svc != null) {
+            super.onDestroy();
+            try {
+                Message msg = Message.obtain(null, BTService.MSG_UNREGISTER_CLIENT);
+                msg.replyTo = mMessenger;
+                svc.send(msg);
+            } catch (RemoteException e) {
+            }
+            getContext().unbindService(connection);
+            bound = false;
+            Log.i("TerrariaBT", "RulesetFragment: onDestroy() end");
+        } else {
+            Log.i("TerrariaBT", "RulesetFragment: why is onDestroy() called?");
+        }
     }
 
     private void getDryingRule() {
-        wait = new WaitSpinner(requireContext());
-        wait.start();
         if (TerrariaApp.MOCK[tabnr - 1]) {
+            Log.i("TerrariaBT", "SprayerRuleFragment: getDryingRule() from file (mock)");
             try {
                 Gson gson = new Gson();
                 String response = new BufferedReader(
@@ -177,32 +297,18 @@ public class SprayerRuleFragment extends Fragment {
                 wait.dismiss();
             }
         } else {
-//            String url = "http://" + curIPAddress + "/sprayerrule";
-//            // Request sensor readings.
-//            JsonObjectRequest jsonObjectRequest = new JsonObjectRequest(Request.Method.GET, url, null,
-//                    response1 -> {
-//                        Gson gson = new Gson();
-//                        try {
-//                            dryingRule = gson.fromJson(response1.toString(), SprayerRule.class);
-//                            updateDryingRule();
-//                            wait.dismiss();
-//                        } catch (JsonSyntaxException e) {
-//                            new NotificationDialog(requireContext(), "Error", "Drying rule response contains errors:\n" + e.getMessage()).show();
-//                        }
-//                    },
-//                    error -> {
-//                        if (error.getMessage() == null) {
-//                            StringWriter sw = new StringWriter();
-//                            PrintWriter pw = new PrintWriter(sw);
-//                            error.printStackTrace(pw);
-//                        } else {
-//                            new NotificationDialog(requireContext(), "Error", "Kontakt met Control Unit verloren.").show();
-//                        }
-//                        wait.dismiss();
-//                    }
-//            );
-//            // Add the request to the RequestQueue.
-//            RequestQueueSingleton.getInstance(requireContext()).add(jsonObjectRequest);
+            if (svc != null) {
+                Log.i("TerrariaBT", "SprayerRuleFragment: getDryingRule() from server");
+                try {
+                    Message msg = Message.obtain(null, BTService.CMD_GET_SPRAYERRULE);
+                    msg.replyTo = mMessenger;
+                    svc.send(msg);
+                } catch (RemoteException e) {
+                    // There is nothing special we need to do if the service has crashed.
+                }
+            } else {
+                Log.i("TerrariaBT", "SprayerRuleFragment: BTService is not ready yet");
+            }
         }
     }
 
@@ -220,26 +326,23 @@ public class SprayerRuleFragment extends Fragment {
     }
 
     private void saveDryingRule() {
-//        wait = new WaitSpinner(requireContext());
-//        wait.start();
-//        String url = "http://" + curIPAddress + "/sprayerrule";
-//        dryingRule.getActions().get(2).setDevice("no device");
-//        dryingRule.getActions().get(2).setOnPeriod(0);
-//        dryingRule.getActions().get(3).setDevice("no device");
-//        dryingRule.getActions().get(3).setOnPeriod(0);
-//        Gson gson = new Gson();
-//        String json = gson.toJson(dryingRule);
-//        VoidRequest req = new VoidRequest(Request.Method.PUT, url, json,
-//                response -> {
-//                    wait.dismiss();
-//                },
-//                error -> {
-//                    wait.dismiss();
-//                    new NotificationDialog(requireActivity(), "Error", "Kontakt met Control Unit verloren.").show();
-//                }
-//        );
-//        // Add the request to the RequestQueue.
-//        RequestQueueSingleton.getInstance(requireContext()).add(req);
+        dryingRule.getActions().get(2).setDevice("no device");
+        dryingRule.getActions().get(2).setOnPeriod(0);
+        dryingRule.getActions().get(3).setDevice("no device");
+        dryingRule.getActions().get(3).setOnPeriod(0);
+        if (svc != null) {
+            try {
+                Log.i("TerrariaBT", "SprayerRuleFragment: saveTimers()");
+                Message msg = Message.obtain(null, BTService.CMD_SET_SPRAYERRULE);
+                msg.replyTo = mMessenger;
+                msg.obj = new Gson().toJson(dryingRule);
+                svc.send(msg);
+            } catch (RemoteException e) {
+                // There is nothing special we need to do if the service has crashed.
+            }
+        } else {
+            Log.i("TerrariaBT", "SprayerRuleFragment: BTService is not ready yet");
+        }
     }
 
     private boolean checkInteger(EditText field, String value) {
