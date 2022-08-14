@@ -54,6 +54,7 @@ public class BTService extends Service {
     public static final int CMD_GET_STATE_FILES = 19;
     public static final int CMD_GET_TEMP_FILE = 20;
     public static final int CMD_GET_STATE_FILE = 21;
+    public static final int MSG_DISCONNECTED = 22;
 
     enum Commands {
         getProperties(CMD_GET_PROPERTIES),
@@ -82,6 +83,7 @@ public class BTService extends Service {
         }
     }
     // Bluetooth stuff
+    private static boolean connected;
     private BluetoothSocket mmSocket;
     private static ConnectedThread connectedThread;
     /** Keeps track of all current registered clients. */
@@ -115,9 +117,10 @@ public class BTService extends Service {
                 connectedThread = new ConnectedThread(mmSocket);
                 connectedThread.start();
             }
+            connected = true;
         } catch (IOException connectException) {
             // Unable to connect; close the socket and return.
-            Log.e("TerrariaBT", "BTService: Could not connect to socket", connectException);
+            Log.e("TerrariaBT", "BTService: Could not connect to socket");
             try {
                 if (mmSocket != null) {
                     mmSocket.close();
@@ -125,6 +128,7 @@ public class BTService extends Service {
             } catch (IOException closeException) {
                 Log.e("TerrariaBT", "BTService: Could not close the client socket", closeException);
             }
+            connected = false;
         }
         return START_STICKY;
     }
@@ -146,19 +150,21 @@ public class BTService extends Service {
 
     @Override
     public void onDestroy() {
-        super.onDestroy();
         Log.i("TerrariaBT","BTService: Stopping.....");
-        connectedThread.cancel();
-        connectedThread.interrupt();
-        try {
-            if (mmSocket != null) {
-                mmSocket.close();
+        if (connectedThread != null && connectedThread.isAlive()) {
+            connectedThread.cancel();
+            connectedThread.interrupt();
+            try {
+                if (mmSocket != null) {
+                    mmSocket.close();
+                }
+            } catch (IOException closeException) {
+                Log.e("TerrariaBT", "Could not close the client socket", closeException);
             }
-        } catch (IOException closeException) {
-            Log.e("TerrariaBT", "Could not close the client socket", closeException);
+            while (connectedThread.isAlive()) {
+            }
         }
-        while (connectedThread.isAlive()) {
-        }
+        super.onDestroy();
     }
 
     private void sendResponse(int cmd, JsonObject obj) {
@@ -186,7 +192,7 @@ public class BTService extends Service {
     /**
      * Handler of incoming messages from clients.
      */
-    static class IncomingHandler extends Handler {
+    class IncomingHandler extends Handler {
 
         @Override
         public void handleMessage(Message msg) {
@@ -205,107 +211,183 @@ public class BTService extends Service {
                     break;
                 }
                 case CMD_GET_PROPERTIES: {
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getProperties.name(), null)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getProperties.name(), null)));
+                    }
                     break;
                 }
                 case CMD_GET_SENSORS: {
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getSensors.name(), null)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getSensors.name(), null)));
+                    }
                     break;
                 }
                 case CMD_GET_STATE: {
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getState.name(), null)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getState.name(), null)));
+                    }
                     break;
                 }
                 case CMD_SET_DEVICE_ON: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("device", msg.obj.toString());
-                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceOn.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("device", msg.obj.toString());
+                        connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceOn.name(), data)));
+                    }
                     break;
                 }
                 case CMD_SET_DEVICE_ON_FOR: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("device", msg.obj.toString());
-                    data.addProperty("period", msg.arg1);
-                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceOnFor.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("device", msg.obj.toString());
+                        data.addProperty("period", msg.arg1);
+                        connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceOnFor.name(), data)));
+                    }
                     break;
                 }
                 case CMD_SET_DEVICE_OFF: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("device", msg.obj.toString());
-                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceOff.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("device", msg.obj.toString());
+                        connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceOff.name(), data)));
+                    }
                     break;
                 }
                 case CMD_SET_DEVICE_MANUAL_ON: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("device", msg.obj.toString());
-                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceManualOn.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("device", msg.obj.toString());
+                        connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceManualOn.name(), data)));
+                    }
                     break;
                 }
                 case CMD_SET_DEVICE_MANUAL_OFF: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("device", msg.obj.toString());
-                    connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceManualOff.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("device", msg.obj.toString());
+                        connectedThread.write(new Gson().toJson(new Command(Commands.setDeviceManualOff.name(), data)));
+                    }
                     break;
                 }
                 case CMD_SET_LIFECYCLE_COUNTER: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("device", msg.obj.toString());
-                    data.addProperty("hours", msg.arg1);
-                    connectedThread.write(new Gson().toJson(new Command(Commands.setLifecycleCounter.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("device", msg.obj.toString());
+                        data.addProperty("hours", msg.arg1);
+                        connectedThread.write(new Gson().toJson(new Command(Commands.setLifecycleCounter.name(), data)));
+                    }
                     break;
                 }
                 case CMD_GET_TIMERS: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("device", msg.obj.toString());
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getTimersForDevice.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("device", msg.obj.toString());
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getTimersForDevice.name(), data)));
+                    }
                     break;
                 }
                 case CMD_SET_TIMERS: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("timers", msg.obj.toString());
-                    connectedThread.write(new Gson().toJson(new Command(Commands.replaceTimers.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("timers", msg.obj.toString());
+                        connectedThread.write(new Gson().toJson(new Command(Commands.replaceTimers.name(), data)));
+                    }
                     break;
                 }
                 case CMD_GET_RULESET: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("rulesetnr", msg.arg1);
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getRuleset.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("rulesetnr", msg.arg1);
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getRuleset.name(), data)));
+                    }
                     break;
                 }
                 case CMD_SET_RULESET: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("rulesetnr", msg.arg1);
-                    data.addProperty("ruleset", msg.obj.toString());
-                    connectedThread.write(new Gson().toJson(new Command(Commands.saveRuleset.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("rulesetnr", msg.arg1);
+                        data.addProperty("ruleset", msg.obj.toString());
+                        connectedThread.write(new Gson().toJson(new Command(Commands.saveRuleset.name(), data)));
+                    }
                     break;
                 }
                 case CMD_GET_SPRAYERRULE: {
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getSprayerRule.name(), null)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getSprayerRule.name(), null)));
+                    }
                     break;
                 }
                 case CMD_SET_SPRAYERRULE: {
-                    JsonObject data = JsonParser.parseString(msg.obj.toString()).getAsJsonObject();
-                    connectedThread.write(new Gson().toJson(new Command(Commands.setSprayerRule.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = JsonParser.parseString(msg.obj.toString()).getAsJsonObject();
+                        connectedThread.write(new Gson().toJson(new Command(Commands.setSprayerRule.name(), data)));
+                    }
                     break;
                 }
                 case CMD_GET_TEMP_FILES: {
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getTempTracefiles.name(), null)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getTempTracefiles.name(), null)));
+                    }
                     break;
                 }
                 case CMD_GET_TEMP_FILE: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("fname", msg.obj.toString());
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getTemperatureFile.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("fname", msg.obj.toString());
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getTemperatureFile.name(), data)));
+                    }
                     break;
                 }
                 case CMD_GET_STATE_FILES: {
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getStateTracefiles.name(), null)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getStateTracefiles.name(), null)));
+                    }
                     break;
                 }
                 case CMD_GET_STATE_FILE: {
-                    JsonObject data = new JsonObject();
-                    data.addProperty("fname", msg.obj.toString());
-                    connectedThread.write(new Gson().toJson(new Command(Commands.getStateFile.name(), data)));
+                    if (!connected) {
+                        sendResponse(MSG_DISCONNECTED, null);
+                    } else {
+                        JsonObject data = new JsonObject();
+                        data.addProperty("fname", msg.obj.toString());
+                        connectedThread.write(new Gson().toJson(new Command(Commands.getStateFile.name(), data)));
+                    }
                     break;
                 }
                 default:
@@ -360,6 +442,7 @@ public class BTService extends Service {
                 }
             } catch (IOException e) {
                 Log.e("TerrariaBT", "BTService: Input stream IO error: " + e.getMessage());
+                sendResponse(MSG_DISCONNECTED, null);
             }
         }
 

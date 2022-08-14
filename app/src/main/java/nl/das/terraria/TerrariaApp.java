@@ -9,6 +9,7 @@ import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
@@ -49,6 +50,7 @@ import nl.das.terraria.fragments.RulesetsFragment;
 import nl.das.terraria.fragments.StateFragment;
 import nl.das.terraria.fragments.TimersFragment;
 import nl.das.terraria.json.Properties;
+import nl.das.terraria.json.Error;
 
 public class TerrariaApp extends AppCompatActivity {
 
@@ -73,6 +75,7 @@ public class TerrariaApp extends AppCompatActivity {
     public Menu menu;
 
     public TerrariaApp() {
+        supportedMessages.add(BTService.MSG_DISCONNECTED);
         supportedMessages.add(BTService.CMD_GET_PROPERTIES);
     }
 
@@ -124,29 +127,41 @@ public class TerrariaApp extends AppCompatActivity {
      * Handler of incoming messages from service.
      */
     class IncomingHandler extends Handler {
+        private boolean connected;
+        @SuppressLint("MissingPermission")
         @Override
         public void handleMessage(Message msg) {
             super.handleMessage(msg);
             Log.i("TerrariaBT","TerrariaApp: handleMessage() for message " + msg.what );
-            if (msg.what == BTService.CMD_GET_PROPERTIES) {
+            if (msg.what == BTService.MSG_DISCONNECTED) {
+                connected = false;
+                Utils.showMessage(getBaseContext(), appView, "Verbinding met met terrarium " + connectedDevice.getName() + " is verbroken");
+            } else if (msg.what == BTService.CMD_GET_PROPERTIES) {
                 Log.i("TerrariaBT", "TerrariaApp: " + msg.obj.toString());
-                Properties tmp = new Gson().fromJson(msg.obj.toString(), Properties.class);
-                configs[curTabNr - 1].setDevices(tmp.getDevices());
-                configs[curTabNr - 1].setTcu(tmp.getTcu());
-                configs[curTabNr - 1].setNrOfTimers(tmp.getNrOfTimers());
-                configs[curTabNr - 1].setNrOfPrograms(tmp.getNrOfPrograms());
-                mTabbar.setVisibility(View.VISIBLE);
-                menu.findItem(id.menu_history_item).setVisible(configs[curTabNr - 1].getTcu().endsWith("PI"));
-                for (int i = 0; i < nrOfTerraria; i++) {
-                    mTabTitles[i].setVisibility(View.VISIBLE);
-                    mTabTitles[i].setText(getString(string.tabName, configs[i].getTcuName(), (MOCK[i] ? " (Test)" : "")));
+                if (msg.obj.toString().startsWith("{\"error")) {
+                    Error err = new Gson().fromJson(msg.obj.toString(), Error.class);
+                    Utils.showMessage(getBaseContext(), appView, err.getError());
+                } else {
+                    Properties tmp = new Gson().fromJson(msg.obj.toString(), Properties.class);
+                    configs[curTabNr - 1].setDevices(tmp.getDevices());
+                    configs[curTabNr - 1].setTcu(tmp.getTcu());
+                    configs[curTabNr - 1].setNrOfTimers(tmp.getNrOfTimers());
+                    configs[curTabNr - 1].setNrOfPrograms(tmp.getNrOfPrograms());
                 }
-                menu.performIdentifierAction(id.menu_state_item, 0); // select state fragment
-                wait.dismiss();
+                connected = true;
             }
+            mTabbar.setVisibility(View.VISIBLE);
+            menu.findItem(id.menu_history_item).setVisible(true);
+            for (int i = 0; i < nrOfTerraria; i++) {
+                mTabTitles[i].setVisibility(View.VISIBLE);
+                mTabTitles[i].setText(getString(string.tabName, configs[i].getTcuName(), (MOCK[i] ? " (Test)" : "")));
+            }
+            if (connected) { menu.performIdentifierAction(id.menu_state_item, 0); }// select state fragment
+            wait.dismiss();
         }
     }
 
+    @SuppressLint("MissingPermission")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
