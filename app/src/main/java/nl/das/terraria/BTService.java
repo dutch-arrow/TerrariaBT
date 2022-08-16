@@ -192,6 +192,7 @@ public class BTService extends Service {
     /**
      * Handler of incoming messages from clients.
      */
+    @SuppressLint("HandlerLeak")
     class IncomingHandler extends Handler {
 
         @Override
@@ -442,7 +443,7 @@ public class BTService extends Service {
                 }
             } catch (IOException e) {
                 Log.e("TerrariaBT", "BTService: Input stream IO error: " + e.getMessage());
-                sendResponse(MSG_DISCONNECTED, null);
+//                sendResponse(MSG_DISCONNECTED, null);
             }
         }
 

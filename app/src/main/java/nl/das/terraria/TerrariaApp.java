@@ -4,6 +4,7 @@ import static nl.das.terraria.R.*;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
@@ -126,6 +127,7 @@ public class TerrariaApp extends AppCompatActivity {
     /**
      * Handler of incoming messages from service.
      */
+    @SuppressLint("HandlerLeak")
     class IncomingHandler extends Handler {
         private boolean connected;
         @SuppressLint("MissingPermission")
@@ -170,6 +172,7 @@ public class TerrariaApp extends AppCompatActivity {
         Log.i("TerrariaBT", "TerrariaApp: onCreate()");
         instance = this;
         wait = new WaitSpinner(this);
+        curTabNr = 1;
 
         // Get the configuration from the properties file
         java.util.Properties config = readConfig();
@@ -213,12 +216,6 @@ public class TerrariaApp extends AppCompatActivity {
     public void onRestart() {
         super.onRestart();
         Log.i("TerrariaBT", "TerrariaApp: onRestart()");
-        if (svc == null) {
-            Log.i("TerrariaBT", "TerrariaApp: onRestart() BTService is not bound");
-        } else {
-            Log.i("TerrariaBT", "TerrariaApp: onRestart() BTService is still bound");
-
-        }
     }
 
     @Override
@@ -226,7 +223,6 @@ public class TerrariaApp extends AppCompatActivity {
         super.onResume();
         Log.i("TerrariaBT", "TerrariaApp: onResume()");
         mTabbar.setVisibility(View.VISIBLE);
-        curTabNr = 1;
         mTabTitles[curTabNr - 1].setTextColor(Color.WHITE);
         bound = false;
         Intent intent = new Intent(getApplicationContext(), BTService.class);
@@ -273,7 +269,7 @@ public class TerrariaApp extends AppCompatActivity {
     }
 
     @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
+    public boolean onCreateOptionsMenu(@NonNull Menu menu) {
         getMenuInflater().inflate(R.menu.main_menu, menu);
         this.menu = menu;
         return true;
@@ -398,9 +394,7 @@ public class TerrariaApp extends AppCompatActivity {
 ===================================== Bluetooth methods ==========================================================================
  */
     ActivityResultLauncher<Intent> enableBt = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
-            result -> {
-                Log.i("TerrariaBT", "TerrariaApp: " + result.getResultCode());
-            }
+            result -> Log.i("TerrariaBT", "TerrariaApp: " + result.getResultCode())
     );
 
     ActivityResultLauncher<String> reqPermission = registerForActivityResult(new ActivityResultContracts.RequestPermission(),
